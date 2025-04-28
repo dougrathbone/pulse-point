@@ -21,26 +21,41 @@ This application helps track and analyze team performance by integrating with se
 
 ## Configuration
 
-Configuration is managed through environment variables loaded from a `.env` file in the project root (`/Users/doug/Code/pulse-point`).
+Configuration is managed through two main places:
 
-1.  **Create the `.env` file:**
-    Create a file named `.env` in the root directory of the project.
+1.  **Environment Variables (`.env` file):** For secrets like API tokens.
+2.  **Settings File (`src/config/settings.ts`):** For non-secret application settings like the target organization and repositories.
 
-2.  **Add Required Tokens:**
-    Add the following lines to your `.env` file, replacing the placeholder values with your actual API tokens:
+### 1. Environment Variables (`.env`)
 
-    ```dotenv
-    # GitHub Personal Access Token (PAT) with appropriate permissions (e.g., repo scope)
-    GITHUB_TOKEN=your_github_pat_here
+Create a file named `.env` in the project root (`/Users/doug/Code/pulse-point`). Add the following lines, replacing the placeholder values with your actual API tokens:
 
-    # Slack Bot Token (required for Slack integration)
-    # SLACK_BOT_TOKEN=your_slack_bot_token_here
+```dotenv
+# GitHub Personal Access Token (PAT)
+# - Required scopes: read:org (to list members), repo (to access repo commits)
+# - Ensure the token user is a member of the TARGET_ORG.
+GITHUB_TOKEN=your_github_pat_here
 
-    # Add other tokens/secrets as needed for Linear, Notion, etc.
-    ```
+# Slack Bot Token (add later)
+# SLACK_BOT_TOKEN=your_slack_bot_token_here
 
-3.  **Important Security Note:**
-    The `.gitignore` file is already configured to ignore `.env` files. **Never commit your `.env` file** containing secrets to version control.
+# Other secrets...
+```
+**Important:** Never commit your `.env` file to version control.
+
+### 2. Settings File (`src/config/settings.ts`)
+
+Modify the `src/config/settings.ts` file to specify the target GitHub organization and optionally specific repositories:
+
+```typescript
+// Target GitHub Organization login name
+export const TARGET_ORG: string = "YOUR_ORG_NAME"; // <<< REPLACE THIS
+
+// Optional: List specific repositories within the org to analyze.
+// If set to null or an empty array [], the application will attempt to 
+// fetch and analyze all accessible repositories within the organization.
+export const TARGET_REPOS: string[] | null = []; // Example: Use [] or null for all repos, or ["repo1", "repo2"] for specific ones.
+```
 
 ## Running the Application
 

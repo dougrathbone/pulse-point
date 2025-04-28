@@ -13,33 +13,41 @@ Okay, let's add the project structure and execution details to the PRD. We'll al
 * **Frontend Framework:** React
 * **Testing Framework:** Jest (for unit and potentially integration tests)
 * **Frontend Styling:** Tailwind CSS
-* **API Client Libraries:** Use official or well-maintained libraries for interacting with GitHub, Slack, Linear, and Notion APIs (e.g., `axios` or `node-fetch` for direct calls, or specific SDKs if available).
-* **Background Jobs:** Use `node-cron` for scheduling periodic background data fetching tasks.
-* **Data Storage:** Flat-file system (e.g., JSON files) for storing application data. Consider organizing files logically (e.g., by user, by data source, by date range).
+* **API Client Libraries:** Use official or well-maintained libraries for interacting with GitHub, Slack, Linear, and Notion APIs (e.g., Octokit for GitHub, Bolt for Slack).
+* **Core Logic:**
+    * Identify team members by fetching members of a configured **GitHub Organization**.
+    * Fetch relevant activity data (commits, PRs, etc.) for repositories within that organization, filtering by the identified members.
+    * Associate GitHub user activity with other services (Slack, Linear, Notion) by matching **email addresses** retrieved from GitHub user profiles (requires appropriate permissions/scopes for the GitHub token) against user emails in other services.
+* **Background Jobs:** Use `node-cron` for scheduling periodic background data fetching tasks (e.g., refreshing organization members, fetching daily activity).
+* **Data Storage:** Flat-file system (e.g., JSON files) for storing application data, potentially including cached organization members, fetched activity, and correlation results. Organize files logically (e.g., by organization, by data source, by date range).
 * **Deployment:** (To be decided - e.g., Vercel, Netlify, AWS, Google Cloud) Needs environment variable management for API keys/secrets. Ensure the deployment environment supports Node.js and can handle persistent file storage if needed, or consider strategies for statelessness if files are generated on-the-fly or stored externally (like S3).
 
 **6.1. Project Structure**
-
-The project repository should follow this basic directory structure:
 
 ```
 pulsepoint/
 ├── /docs             # Documentation files (e.g., PRD, setup guides)
 ├── /src              # Source code files (TypeScript/TSX)
 │   ├── /components   # React frontend components (.tsx)
+│   ├── /config       # Application configuration (e.g., settings.ts)
 │   ├── /server       # Backend Node.js code (.ts)
-│   │   ├── /api      # API route handlers
-│   │   ├── /services # Business logic, API clients
-│   │   └── index.ts  # Server entry point (or server.ts)
-│   ├── /shared       # Shared types or utilities (.ts)
-│   └── index.tsx     # Frontend entry point (if applicable, for bundling)
+│   │   ├── /api      # API route handlers (e.g., orgRoutes.ts)
+│   │   ├── /services # Business logic, API clients (e.g., githubService.ts, slackService.ts)
+│   │   └── index.ts  # Server entry point
+│   ├── /shared       # Shared types or utilities (e.g., types.ts)
+│   └── index.tsx     # Frontend entry point
+│   └── App.tsx       # Main frontend application component
+│   └── index.css     # Main CSS file for Tailwind
+│   └── index.html    # HTML entry point for Vite
 ├── /tests            # Test files (.test.ts or .spec.ts)
-│   └── *.test.ts     # Jest test files, mirroring /src structure often helps
 ├── jest.config.js    # Jest configuration
 ├── package.json      # Project dependencies and scripts
+├── postcss.config.js # PostCSS configuration (for Tailwind)
 ├── tailwind.config.js # Tailwind CSS configuration
-├── tsconfig.json     # TypeScript configuration
-└── .env              # Environment variables (should be in .gitignore)
+├── tsconfig.json     # TypeScript configuration (base)
+├── tsconfig.vite.json # TypeScript configuration (for Vite frontend)
+├── vite.config.ts    # Vite configuration
+└── .env              # Environment variables (ignored by git)
 ```
 
 **6.2. Execution**
