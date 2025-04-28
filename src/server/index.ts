@@ -1,7 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path'; // Import path module
 import * as githubService from './services/githubService'; // Import GitHub service
-import { SamlSsoError } from './services/githubService'; // Import the custom error
+import { SamlSsoError, RateLimitError } from './services/githubService'; // Import both custom errors
 import { TARGET_ORG, TARGET_REPOS } from '../../settings'; // Update path
 
 const app = express();
@@ -17,9 +17,12 @@ app.get('/api/hello', (req: Request, res: Response) => {
   res.json({ message: 'Hello from the PulsePoint server!' });
 });
 
-// Define the async handler function for organization commits
-const handleGetOrgCommits = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-  const { since, until } = req.query;
+// Define the async handler function for organization dashboard data
+const handleGetOrgDashboard = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  const sinceDate = new Date();
+  sinceDate.setDate(sinceDate.getDate() - 30);
+  const sinceISO = (req.query.since as string) || sinceDate.toISOString();
+  const untilISO = req.query.until as string | undefined;
 
   if (!TARGET_ORG) {
     const err = new Error('TARGET_ORG not configured in settings.ts');
@@ -27,59 +30,27 @@ const handleGetOrgCommits = async (req: Request, res: Response, next: NextFuncti
     return next(err);
   }
 
-  // Remove the incorrect check for TARGET_REPOS length
-  // The service layer (getOrgMemberCommits) will handle fetching all repos if TARGET_REPOS is empty/null.
-  // if (!TARGET_REPOS || TARGET_REPOS.length === 0) {
-  //     const err = new Error('TARGET_REPOS must be configured in settings.ts with at least one repository.');
-  //     (err as any).status = 400;
-  //     return next(err);
-  // }
-
   try {
-    // Determine repo list to log correctly
     const repoList = (TARGET_REPOS && TARGET_REPOS.length > 0) ? TARGET_REPOS.join(', ') : '(all org repos)';
-    console.log(`Fetching commits for org: ${TARGET_ORG}, Repos: ${repoList}`);
+    console.log(`Fetching dashboard data for org: ${TARGET_ORG}, Repos: ${repoList}`);
     
-    // Fetch commits for the org members across the specified repos (or all if TARGET_REPOS is empty/null)
-    const orgCommits = await githubService.getOrgMemberCommits(
-        TARGET_ORG,
-        TARGET_REPOS, // Pass the configured list (can be null or empty)
-        since as string | undefined,
-        until as string | undefined
+    // Call the service function which handles caching and stale data internally
+    const orgActivityResult = await githubService.getOrgActivityData(
+        TARGET_ORG, TARGET_REPOS, sinceISO, untilISO
     );
     
-    // Group commits by author
-    const commitsByAuthor = orgCommits.reduce((acc: { [key: string]: any[] }, commit) => {
-      const authorLogin = commit.author?.login.toLowerCase();
-      if (authorLogin) {
-        if (!acc[authorLogin]) {
-          acc[authorLogin] = [];
-        }
-        acc[authorLogin].push(commit);
-      }
-      return acc;
-    }, {});
-    
-    // Also return the list of members found, useful for the frontend
-    // getOrgMembers is now cached, so calling it again here is usually fast
-    const members = await githubService.getOrgMembers(TARGET_ORG);
-    // No need to map here, pass the full member objects
-    // const memberLogins = members.map(m => m.login);
-
-    res.json({ commitsByAuthor, members: members }); // Pass full member objects
+    // Pass the entire result (which includes isStale and error flags if stale) 
+    res.json(orgActivityResult);
 
   } catch (error) {
-    // Check if it's our specific SAML SSO error
+    // Handle errors NOT caught by the service layer's stale cache logic
+    // (e.g., initial member fetch fails AND no stale cache exists)
     if (error instanceof SamlSsoError) {
-        // Send a specific response format for the frontend to handle
-        res.status(error.status).json({
-            ssoRequired: true,
-            ssoUrl: error.ssoUrl,
-            message: error.message,
-        });
+        res.status(error.status).json({ ssoRequired: true, ssoUrl: error.ssoUrl, message: error.message });
+    } else if (error instanceof RateLimitError) {
+         res.status(error.status).json({ rateLimitExceeded: true, resetTimestamp: error.resetTimestamp, message: error.message });
     } else {
-        // Pass other errors to the default error handler
-        console.error("API Error fetching org commits:", error);
+        console.error("API Error fetching org dashboard data:", error);
         next(error); 
     }
   }
@@ -88,7 +59,6 @@ const handleGetOrgCommits = async (req: Request, res: Response, next: NextFuncti
 // Define the async handler function for user details
 const handleGetUserDetails = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const { username } = req.params;
-    // Use consistent date range (match dashboard)
     const sinceDate = new Date();
     sinceDate.setDate(sinceDate.getDate() - 30); 
     const sinceISO = (req.query.since as string) || sinceDate.toISOString();
@@ -108,56 +78,84 @@ const handleGetUserDetails = async (req: Request, res: Response, next: NextFunct
     try {
         console.log(`Fetching details for user: ${username}, Org: ${TARGET_ORG}`);
         
-        // Fetch user-specific data and overall org data concurrently
-        const [userCommits, userIssuesAndPRs, allOrgCommitsData] = await Promise.all([
-            githubService.searchUserCommits(TARGET_ORG, username, TARGET_REPOS, sinceISO, untilISO),
-            githubService.searchUserIssuesAndPRs(TARGET_ORG, username, TARGET_REPOS, sinceISO, untilISO),
-            // Fetch all org commits for comparison (should be cached)
+        // Fetch all required data concurrently using service functions
+        // These functions handle their own caching and stale-on-error logic
+        const [userCommits, userPRsAuthored, userIssuesAuthored, userPRComments, allOrgCommitsData] = await Promise.all([
+            githubService.searchUserCommits(TARGET_ORG, username, TARGET_REPOS, sinceISO),
+            githubService.searchUserPRsAuthored(TARGET_ORG, username, TARGET_REPOS, sinceISO),
+            githubService.searchUserIssuesAuthored(TARGET_ORG, username, TARGET_REPOS, sinceISO),
+            githubService.searchUserPRComments(TARGET_ORG, username, TARGET_REPOS, sinceISO),
             githubService.getOrgMemberCommits(TARGET_ORG, TARGET_REPOS, sinceISO, untilISO)
         ]);
         
-        // Calculate total org commits for the period
+        // Calculate totals
         const totalOrgCommits = allOrgCommitsData.length;
-        
-        // Separate user PRs and Issues
-        const userPRs = userIssuesAndPRs.filter(item => item.pull_request);
-        const userIssues = userIssuesAndPRs.filter(item => !item.pull_request);
+        // TODO: Add fetching/calculation for total Org PRs/Issues/Comments for comparison
+        const totalOrgPRs = 0; // Placeholder
+        const totalOrgIssues = 0; // Placeholder
+        const totalOrgPRComments = 0; // Placeholder
 
-        // TODO: Add call to Claude API summarization service here
+        // Calculate PR Turnaround Time (in hours)
+        let totalTurnaroundMs = 0;
+        let closedPrCount = 0;
+        userPRsAuthored.forEach((pr: any) => { // Use specific type later
+            if (pr.closed_at && pr.created_at) {
+                totalTurnaroundMs += new Date(pr.closed_at).getTime() - new Date(pr.created_at).getTime();
+                closedPrCount++;
+            }
+        });
+        const avgTurnaroundHours = closedPrCount > 0 ? (totalTurnaroundMs / closedPrCount / (1000 * 60 * 60)) : null;
+
+        // Placeholder for avg comments before shipping
+        const avgCommentsBeforeShipping = 0; 
+
+        // Placeholder for AI summary
         const aiSummary = `AI summary for ${username} is pending implementation.`;
 
+        // Assemble final payload - assume data is fresh if we get here
         res.json({ 
             username,
             summary: {
                 commitCount: userCommits.length,
-                prCount: userPRs.length,
-                issueCount: userIssues.length,
-                totalOrgCommitCount: totalOrgCommits // Add total for context
+                prAuthoredCount: userPRsAuthored.length,
+                issueAuthoredCount: userIssuesAuthored.length,
+                prCommentCount: userPRComments.length,
+                avgTurnaroundHours: avgTurnaroundHours, // Add turnaround time
+                avgCommentsBeforeShipping: avgCommentsBeforeShipping,
+                // Comparative data placeholders
+                totalOrgCommitCount: totalOrgCommits, 
+                totalOrgPRCount: totalOrgPRs, // Placeholder
+                totalOrgIssueCount: totalOrgIssues, // Placeholder
             },
             commits: userCommits, 
-            pullRequests: userPRs,
-            issues: userIssues,
-            aiSummary 
+            pullRequestsAuthored: userPRsAuthored,
+            issuesAuthored: userIssuesAuthored,
+            pullRequestCommentsMade: userPRComments,
+            aiSummary,
+            isStale: false // Mark as fresh data
         });
 
     } catch (error) {
-        // Handle SAML error specifically if needed (might occur on search too)
-        if (error instanceof SamlSsoError) {
-            res.status(error.status).json({
-                ssoRequired: true,
-                ssoUrl: error.ssoUrl,
-                message: error.message,
-            });
+         // Handle errors from the Promise.all or calculations
+         if (error instanceof SamlSsoError) {
+            res.status(error.status).json({ ssoRequired: true, ssoUrl: error.ssoUrl, message: error.message });
+        } else if (error instanceof RateLimitError) {
+             res.status(error.status).json({ rateLimitExceeded: true, resetTimestamp: error.resetTimestamp, message: error.message });
         } else {
             console.error(`API Error fetching details for user ${username}:`, error);
             next(error); 
         }
+        // NOTE: We are currently NOT attempting to serve stale data for the *entire* user detail page 
+        // if *any* of the concurrent fetches fail after a cache miss.
+        // Implementing that would require more complex logic to combine potentially stale partial results.
     }
 };
 
-// Update API route to use the new handler
-app.get('/api/org/commits', handleGetOrgCommits);
-app.get('/api/user/:username/details', handleGetUserDetails); // Add new route
+// Update API route to use the new handler for the dashboard
+app.get('/api/org/dashboard', handleGetOrgDashboard);
+// Remove old /api/org/commits route
+// app.get('/api/org/commits', handleGetOrgCommits); 
+app.get('/api/user/:username/details', handleGetUserDetails); 
 
 // Remove old team commit handler/route
 // app.get('/api/team/commits', handleGetTeamCommits);
@@ -171,13 +169,21 @@ app.get('/api/user/:username/details', handleGetUserDetails); // Add new route
 
 // General error handler - this remains mostly the same
 app.use((err: any, req: Request, res: Response, next: NextFunction) => {
-  // Avoid sending SAML error details through the generic handler if already handled
+  // Check for handled errors first
   if (err instanceof SamlSsoError) {
       // Already handled, but log just in case it somehow reaches here
       console.error("SAML SSO Error passed to generic handler:", err.message);
       // Ensure response isn't sent twice
       if (!res.headersSent) {
           res.status(err.status).json({ message: err.message, ssoRequired: true, ssoUrl: err.ssoUrl });
+      }
+      return;
+  }
+  if (err instanceof RateLimitError) {
+      // Log rate limit error if it reaches here (should be handled by route handlers)
+      console.error("Rate Limit Error passed to generic handler:", err.message);
+      if (!res.headersSent) {
+          res.status(err.status).json({ message: err.message, rateLimitExceeded: true, resetTimestamp: err.resetTimestamp });
       }
       return;
   }

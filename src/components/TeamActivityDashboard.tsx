@@ -1,28 +1,32 @@
 import React from 'react';
 import { Link } from 'react-router-dom'; // Import Link
 
-// Placeholder type
-type Commit = any; 
-// Define the enriched member type passed from App
+// Types expected from OrgDashboardPage
 interface OrgMember {
     login: string;
     name?: string | null;
 }
+interface UserActivitySummary {
+    commitCount: number;
+    prAuthoredCount: number;
+    issueAuthoredCount: number;
+    prCommentCount: number;
+}
 interface TeamActivityDashboardProps {
-  commitsByAuthor: { [authorLogin: string]: Commit[] };
+  activityByUser: { [login: string]: UserActivitySummary };
   teamMembers: OrgMember[]; // Expect array of OrgMember objects
 }
 
-const TeamActivityDashboard: React.FC<TeamActivityDashboardProps> = ({ commitsByAuthor, teamMembers }) => {
+const TeamActivityDashboard: React.FC<TeamActivityDashboardProps> = ({ activityByUser, teamMembers }) => {
 
-  // Calculate commit counts and combine with member info
+  // Combine member info with activity counts
   const memberStats = teamMembers.map(member => {
     const login = member.login.toLowerCase();
-    const commitCount = commitsByAuthor[login]?.length || 0;
+    const activity = activityByUser[login] || { commitCount: 0, prAuthoredCount: 0, issueAuthoredCount: 0, prCommentCount: 0 }; // Default if no activity
     return {
       ...member,
-      commitCount,
-      displayName: member.name || '' // Use name or empty string
+      ...activity, // Add counts to member object
+      displayName: member.name || member.login // Use login if name is null/empty
     };
   });
 
@@ -40,10 +44,10 @@ const TeamActivityDashboard: React.FC<TeamActivityDashboardProps> = ({ commitsBy
           <tr>
             <th className="px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
             <th className="px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Username</th>
-            <th className="px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-right">Commits (30d)</th>
-            {/* Add headers for PRs/Issues later */}
-            {/* <th className="px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-right">PRs</th> */}
-            {/* <th className="px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-right">Issues</th> */}
+            <th className="px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-right">Commits</th>
+            <th className="px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-right">PRs Authored</th>
+            <th className="px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-right">Issues Authored</th>
+            <th className="px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-right">PR Comments</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-200">
@@ -51,16 +55,16 @@ const TeamActivityDashboard: React.FC<TeamActivityDashboardProps> = ({ commitsBy
             <tr key={member.login} className="hover:bg-gray-50">
               <td className="px-6 py-4 whitespace-nowrap">
                 <Link to={`/user/${member.login}`} className="text-blue-600 hover:underline font-medium">
-                  {member.displayName || member.login} { /* Show login if no display name */ }
+                  {member.displayName}
                 </Link>
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                 {member.login}
               </td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
-                {member.commitCount}
-              </td>
-              {/* Add cells for PRs/Issues later */}
+              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{member.commitCount}</td>
+              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{member.prAuthoredCount}</td>
+              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{member.issueAuthoredCount}</td>
+              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{member.prCommentCount}</td>
             </tr>
           ))}
         </tbody>

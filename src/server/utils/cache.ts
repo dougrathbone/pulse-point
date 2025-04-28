@@ -30,6 +30,15 @@ interface CacheData<T> {
     data: T;
 }
 
+interface ReadCacheOptions {
+    allowStale?: boolean;
+}
+
+interface ReadCacheResult<T> {
+    data: T | null;
+    stale: boolean;
+}
+
 /**
  * Writes data to a cache file.
  * @param key Unique identifier for the cache entry.
@@ -53,37 +62,51 @@ export const writeCache = async (key: string, data: any): Promise<void> => {
 };
 
 /**
- * Reads data from a cache file if it exists and is not expired.
+ * Reads data from a cache file.
  * @param key Unique identifier for the cache entry.
  * @param maxAgeMs Maximum age of the cache entry in milliseconds.
- * @returns The cached data or null if not found or expired.
+ * @param options Optional settings, e.g., { allowStale: true }.
+ * @returns An object { data: T | null, stale: boolean }.
  */
-export const readCache = async <T>(key: string, maxAgeMs: number): Promise<T | null> => {
-    if (!CACHE_ENABLED) return null;
+export const readCache = async <T>(
+    key: string, 
+    maxAgeMs: number, 
+    options: ReadCacheOptions = {}
+): Promise<ReadCacheResult<T>> => {
+    if (!CACHE_ENABLED) return { data: null, stale: false };
 
     const filePath = path.join(CACHE_DIR, `${key}.json`);
+    const result: ReadCacheResult<T> = { data: null, stale: false };
 
     try {
         const fileContent = await fs.promises.readFile(filePath, 'utf-8');
         const cacheEntry: CacheData<T> = JSON.parse(fileContent);
+        const isExpired = Date.now() - cacheEntry.timestamp > maxAgeMs;
 
-        if (Date.now() - cacheEntry.timestamp > maxAgeMs) {
+        if (isExpired) {
+            result.stale = true;
             console.log(`Cache expired for key: ${key}`);
-            // Optionally remove the stale file
-            // await fs.promises.unlink(filePath).catch(err => console.error(`Failed to delete stale cache for ${key}:`, err));
-            return null;
+            if (options.allowStale) {
+                console.log(`Serving stale cache for key: ${key}`);
+                result.data = cacheEntry.data;
+            } else {
+                // Optionally remove stale file if not allowing stale
+                 // await fs.promises.unlink(filePath).catch(/*...*/);
+            }
+        } else {
+            // console.log(`Cache hit for key: ${key}`);
+            result.data = cacheEntry.data;
+            result.stale = false;
         }
 
-        // console.log(`Cache hit for key: ${key}`);
-        return cacheEntry.data;
     } catch (error: any) {
         if (error.code === 'ENOENT') {
-            // File does not exist - normal cache miss
             // console.log(`Cache miss for key: ${key}`);
         } else {
-            // Other errors (read permission, JSON parse error, etc.)
             console.error(`Failed to read cache for key ${key}:`, error);
         }
-        return null;
+        // Keep result.data as null on error
     }
+    
+    return result;
 }; 

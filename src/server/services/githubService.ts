@@ -1,7 +1,7 @@
 import { Octokit } from '@octokit/rest';
 import dotenv from 'dotenv';
 import { RequestError } from "@octokit/request-error"; // Import Octokit error type
-import { readCache, writeCache } from '../utils/cache'; // Import cache utils
+import { readCache, writeCache } from '../utils/cache'; // Correct path
 
 dotenv.config(); // Load environment variables from .env file
 
@@ -31,14 +31,27 @@ export class SamlSsoError extends Error {
 }
 // --- End Custom Error ---
 
+// --- Custom Error for Rate Limit ---
+export class RateLimitError extends Error {
+    resetTimestamp: number | null;
+    status: number;
+
+    constructor(message: string, resetTimestamp: number | null) {
+        super(message);
+        this.name = 'RateLimitError';
+        this.resetTimestamp = resetTimestamp; 
+        this.status = 429; // Use 429 status code
+    }
+}
+// --- End Custom Error ---
+
 /**
- * Checks an error from Octokit to see if it's a SAML SSO error.
- * If it is, throws a custom SamlSsoError.
- * Otherwise, re-throws the original error.
+ * Checks an error from Octokit for SAML SSO or Rate Limit errors.
  */
 const handleOctokitError = (error: unknown, context: string) => {
     console.error(`${context}:`, error);
     if (error instanceof RequestError && error.status === 403) {
+        // Check for SAML SSO
         const ssoHeader = error.response?.headers?.['x-github-sso'];
         if (typeof ssoHeader === 'string' && ssoHeader.startsWith('required')) {
             // Extract the URL part
@@ -51,6 +64,16 @@ const handleOctokitError = (error: unknown, context: string) => {
                     ssoUrl
                 );
             }
+        }
+        
+        // Check for Rate Limit (Primary or Secondary)
+        const rateLimitRemaining = error.response?.headers?.['x-ratelimit-remaining'];
+        if (rateLimitRemaining === '0') { // Check if remaining is 0
+            const resetTimestampHeader = error.response?.headers?.['x-ratelimit-reset'];
+            const resetTimestamp = resetTimestampHeader ? parseInt(resetTimestampHeader, 10) * 1000 : null; // Convert epoch seconds to ms
+            const message = (error.response?.data as any)?.message || 'GitHub API rate limit exceeded.';
+            console.warn(`GitHub Rate Limit Hit. Resets at: ${resetTimestamp ? new Date(resetTimestamp).toISOString() : 'Unknown'}`);
+            throw new RateLimitError(message, resetTimestamp);
         }
     }
     // Handle 404 specifically for clarity
@@ -144,6 +167,9 @@ const MEMBERS_CACHE_TTL = 1 * 60 * 60 * 1000; // 1 hour
 const REPOS_CACHE_TTL = 1 * 60 * 60 * 1000; // 1 hour
 const COMMITS_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
 const USER_DATA_CACHE_TTL = 15 * 60 * 1000; // 15 minutes for user-specific data
+// Define TTLs for aggregated activity data
+export const ORG_ACTIVITY_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
+export const USER_ACTIVITY_CACHE_TTL = 15 * 60 * 1000; // 15 minutes for individual user detail fetches
 // --- End Cache Settings ---
 
 /**
@@ -152,14 +178,13 @@ const USER_DATA_CACHE_TTL = 15 * 60 * 1000; // 15 minutes for user-specific data
  * Uses caching.
  */
 export const getOrgMembers = async (org: string): Promise<OrgMember[]> => {
-  const cacheKey = `org-${org}-members-with-names`; // Update cache key
-  const cachedMembers = await readCache<OrgMember[]>(cacheKey, MEMBERS_CACHE_TTL);
+  const cacheKey = `org-${org}-members-with-names`;
+  const { data: cachedMembers, stale } = await readCache<OrgMember[]>(cacheKey, MEMBERS_CACHE_TTL);
   if (cachedMembers) {
-    console.log(`Cache hit for members (with names) of org: ${org}`);
+    console.log(`Cache hit for members of org: ${org} ${stale ? '(stale)' : ''}`);
     return cachedMembers;
   }
-  
-  console.log(`Cache miss for members (with names) of org: ${org}. Fetching from API...`);
+  console.log(`Cache miss for members of org: ${org}. Fetching from API...`);
   try {
     console.log(`Fetching members for organization: ${org}...`);
     const membersList = await octokit.paginate(octokit.orgs.listMembers, { org, per_page: 100 });
@@ -183,6 +208,13 @@ export const getOrgMembers = async (org: string): Promise<OrgMember[]> => {
     await writeCache(cacheKey, membersWithNames); // Write to cache on success
     return membersWithNames;
   } catch (error) {
+    // On error, try returning stale cache if available
+    const { data: staleMembers } = await readCache<OrgMember[]>(cacheKey, 0, { allowStale: true });
+    if (staleMembers) {
+        console.warn(`API error fetching members for ${org}, serving stale cache. Error:`, error instanceof Error ? error.message : error);
+        return staleMembers;
+    }
+    // If no stale cache, handle/rethrow original error
     handleOctokitError(error, `Error fetching members for org ${org}`);
     throw new Error('Unhandled error in getOrgMembers after error handler.');
   }
@@ -195,12 +227,11 @@ export const getOrgMembers = async (org: string): Promise<OrgMember[]> => {
  */
 export const getOrgRepos = async (org: string): Promise<{ name: string }[]> => {
     const cacheKey = `org-${org}-repos`;
-    const cachedRepos = await readCache<{ name: string }[]>(cacheKey, REPOS_CACHE_TTL);
+    const { data: cachedRepos, stale } = await readCache<{ name: string }[]>(cacheKey, REPOS_CACHE_TTL);
     if (cachedRepos) {
-        console.log(`Cache hit for repos of org: ${org}`);
-        return cachedRepos;
+       console.log(`Cache hit for repos of org: ${org} ${stale ? '(stale)' : ''}`);
+       return cachedRepos;
     }
-    
     console.log(`Cache miss for repos of org: ${org}. Fetching from API...`);
     try {
         console.log(`Fetching repositories for organization: ${org}...`);
@@ -213,6 +244,11 @@ export const getOrgRepos = async (org: string): Promise<{ name: string }[]> => {
         await writeCache(cacheKey, repoNames); // Write to cache
         return repoNames;
     } catch (error) {
+        const { data: staleRepos } = await readCache<{ name: string }[]>(cacheKey, 0, { allowStale: true });
+        if (staleRepos) {
+            console.warn(`API error fetching repos for ${org}, serving stale cache. Error:`, error instanceof Error ? error.message : error);
+            return staleRepos;
+        }
         handleOctokitError(error, `Error fetching repositories for org ${org}`);
         throw new Error('Unhandled error in getOrgRepos after error handler.');
     }
@@ -230,7 +266,8 @@ export const getOrgMemberCommits = async (org: string, targetRepos: string[] | n
   const untilKeyPart = until ? new Date(until).toISOString().split('T')[0] : 'now'; // Use date part
   const cacheKey = `org-${org}-commits-repos_${repoKeyPart}-since_${sinceKeyPart}-until_${untilKeyPart}`;
 
-  const cachedCommits = await readCache<any[]>(cacheKey, COMMITS_CACHE_TTL);
+  // Correctly destructure readCache result
+  const { data: cachedCommits } = await readCache<any[]>(cacheKey, COMMITS_CACHE_TTL);
   if (cachedCommits) {
     console.log(`Cache hit for aggregated org commits: ${cacheKey}`);
     return cachedCommits;
@@ -341,73 +378,216 @@ export const getOrgMemberCommits = async (org: string, targetRepos: string[] | n
 /**
  * Searches for commits by a specific author within an org and optional repos.
  */
-export const searchUserCommits = async (org: string, username: string, targetRepos: string[] | null, since?: string, until?: string): Promise<any[]> => {
-    const repoQualifier = targetRepos && targetRepos.length > 0 
-        ? targetRepos.map(repo => `repo:${org}/${repo}`).join(' ') 
-        : `org:${org}`;
-    const dateQualifier = since ? `committer-date:>${since}` : ''; // Adjust if using `author-date`
-    // Note: GitHub search API date range format differs slightly from commits endpoint.
-    // It might be simpler to filter by date after fetching if precise range is needed.
-    
+export const searchUserCommits = async (org: string, username: string, targetRepos: string[] | null, since?: string): Promise<any[]> => {
+    const repoQualifier = targetRepos && targetRepos.length > 0 ? targetRepos.map(repo => `repo:${org}/${repo}`).join(' ') : `org:${org}`;
+    const dateQualifier = since ? `committer-date:>${since}` : '';
     const query = `author:${username} ${repoQualifier} ${dateQualifier}`;
-    const cacheKey = `user-${username}-commits-query_${Buffer.from(query).toString('base64')}`; // Basic cache key from query
-
-    const cachedCommits = await readCache<any[]>(cacheKey, USER_DATA_CACHE_TTL);
-    if (cachedCommits) {
-        console.log(`Cache hit for user commits: ${username}`);
-        return cachedCommits;
+    const cacheKey = `user-${username}-commits-query_${Buffer.from(query).toString('base64')}`;
+    
+    const { data: cachedData, stale } = await readCache<any[]>(cacheKey, USER_ACTIVITY_CACHE_TTL);
+    if (cachedData) {
+        console.log(`Cache hit for user commits: ${username} ${stale ? '(stale)' : ''}`);
+        return cachedData;
     }
-
     console.log(`Cache miss for user commits: ${username}. Query: ${query}`);
     try {
-        const results = await octokit.paginate(octokit.search.commits, {
-            q: query,
-            sort: 'committer-date', // or author-date
-            order: 'desc',
-            per_page: 100,
-        });
+        const results = await octokit.paginate(octokit.search.commits, { q: query, sort: 'committer-date', order: 'desc', per_page: 100 });
         await writeCache(cacheKey, results);
         return results;
     } catch (error) {
+        const { data: staleData } = await readCache<any[]>(cacheKey, 0, { allowStale: true });
+        if (staleData) {
+            console.warn(`API error searching commits for ${username}, serving stale cache. Error:`, error instanceof Error ? error.message : error);
+            return staleData;
+        }
         handleOctokitError(error, `Error searching commits for user ${username}`);
         throw new Error('Unhandled error in searchUserCommits after error handler.');
     }
 };
 
 /**
- * Searches for issues and PRs created by a specific author within an org and optional repos.
+ * Searches for PRs created by a specific author within an org and optional repos.
  */
-export const searchUserIssuesAndPRs = async (org: string, username: string, targetRepos: string[] | null, since?: string, until?: string): Promise<any[]> => {
-    const repoQualifier = targetRepos && targetRepos.length > 0 
-        ? targetRepos.map(repo => `repo:${org}/${repo}`).join(' ') 
-        : `org:${org}`;
+export const searchUserPRsAuthored = async (org: string, username: string, targetRepos: string[] | null, since?: string): Promise<any[]> => {
+    const repoQualifier = targetRepos && targetRepos.length > 0 ? targetRepos.map(repo => `repo:${org}/${repo}`).join(' ') : `org:${org}`;
     const dateQualifier = since ? `created:>${since}` : '';
-    // Combine issue and PR search
-    const query = `author:${username} ${repoQualifier} ${dateQualifier}`;
-    const cacheKey = `user-${username}-issuesprs-query_${Buffer.from(query).toString('base64')}`;
+    const query = `is:pr author:${username} ${repoQualifier} ${dateQualifier}`;
+    const cacheKey = `user-${username}-prs_authored-query_${Buffer.from(query).toString('base64')}`;
 
-    const cachedIssues = await readCache<any[]>(cacheKey, USER_DATA_CACHE_TTL);
-    if (cachedIssues) {
-        console.log(`Cache hit for user issues/PRs: ${username}`);
-        return cachedIssues;
+    const { data: cachedData, stale } = await readCache<any[]>(cacheKey, USER_ACTIVITY_CACHE_TTL);
+    if (cachedData) {
+        console.log(`Cache hit for user PRs authored: ${username} ${stale ? '(stale)' : ''}`);
+        return cachedData;
     }
-
-    console.log(`Cache miss for user issues/PRs: ${username}. Query: ${query}`);
+    console.log(`Cache miss for user PRs authored: ${username}. Query: ${query}`);
     try {
         const results = await octokit.paginate(octokit.search.issuesAndPullRequests, {
-            q: query,
-            sort: 'created',
-            order: 'desc',
-            per_page: 100,
+             q: query, sort: 'created', order: 'desc', per_page: 100,
         });
         await writeCache(cacheKey, results);
         return results;
     } catch (error) {
-        handleOctokitError(error, `Error searching issues/PRs for user ${username}`);
-        throw new Error('Unhandled error in searchUserIssuesAndPRs after error handler.');
+        const { data: staleData } = await readCache<any[]>(cacheKey, 0, { allowStale: true });
+        if (staleData) {
+            console.warn(`API error searching PRs authored by ${username}, serving stale cache. Error:`, error instanceof Error ? error.message : error);
+            return staleData;
+        }
+        handleOctokitError(error, `Error searching PRs authored by ${username}`);
+        throw new Error('Unhandled error in searchUserPRsAuthored after error handler.');
     }
 };
 
-// Add more functions here for fetching issues, etc.
+/**
+ * Searches for issues created by a specific author within an org and optional repos.
+ */
+export const searchUserIssuesAuthored = async (org: string, username: string, targetRepos: string[] | null, since?: string): Promise<any[]> => {
+    const repoQualifier = targetRepos && targetRepos.length > 0 ? targetRepos.map(repo => `repo:${org}/${repo}`).join(' ') : `org:${org}`;
+    const dateQualifier = since ? `created:>${since}` : '';
+    const query = `is:issue author:${username} ${repoQualifier} ${dateQualifier}`;
+    const cacheKey = `user-${username}-issues_authored-query_${Buffer.from(query).toString('base64')}`;
+
+    const { data: cachedData, stale } = await readCache<any[]>(cacheKey, USER_ACTIVITY_CACHE_TTL);
+    if (cachedData) {
+        console.log(`Cache hit for user issues authored: ${username} ${stale ? '(stale)' : ''}`);
+        return cachedData;
+    }
+    console.log(`Cache miss for user issues authored: ${username}. Query: ${query}`);
+    try {
+        const results = await octokit.paginate(octokit.search.issuesAndPullRequests, {
+            q: query, sort: 'created', order: 'desc', per_page: 100,
+        });
+        await writeCache(cacheKey, results);
+        return results;
+    } catch (error) {
+        const { data: staleData } = await readCache<any[]>(cacheKey, 0, { allowStale: true });
+        if (staleData) {
+            console.warn(`API error searching issues authored by ${username}, serving stale cache. Error:`, error instanceof Error ? error.message : error);
+            return staleData;
+        }
+        handleOctokitError(error, `Error searching issues authored by ${username}`);
+        throw new Error('Unhandled error in searchUserIssuesAuthored after error handler.');
+    }
+};
+
+/**
+ * Searches for PR comments made by a specific user within an org and optional repos.
+ */
+export const searchUserPRComments = async (org: string, username: string, targetRepos: string[] | null, since?: string): Promise<any[]> => {
+    const repoQualifier = targetRepos && targetRepos.length > 0 ? targetRepos.map(repo => `repo:${org}/${repo}`).join(' ') : `org:${org}`;
+    const dateQualifier = since ? `created:>${since}` : '';
+    const query = `is:pr commenter:${username} ${repoQualifier} ${dateQualifier}`;
+    const cacheKey = `user-${username}-pr_comments-query_${Buffer.from(query).toString('base64')}`;
+
+    const { data: cachedData, stale } = await readCache<any[]>(cacheKey, USER_ACTIVITY_CACHE_TTL);
+    if (cachedData) {
+        console.log(`Cache hit for user PR comments: ${username} ${stale ? '(stale)' : ''}`);
+        return cachedData;
+    }
+    console.log(`Cache miss for user PR comments: ${username}. Query: ${query}`);
+    try {
+        const results = await octokit.paginate(octokit.search.issuesAndPullRequests, { 
+            q: query, sort: 'created', order: 'desc', per_page: 100,
+        });
+        await writeCache(cacheKey, results);
+        return results;
+    } catch (error) {
+        const { data: staleData } = await readCache<any[]>(cacheKey, 0, { allowStale: true });
+        if (staleData) {
+            console.warn(`API error searching PR comments by ${username}, serving stale cache. Error:`, error instanceof Error ? error.message : error);
+            return staleData;
+        }
+        handleOctokitError(error, `Error searching PR comments by ${username}`);
+        throw new Error('Unhandled error in searchUserPRComments after error handler.');
+    }
+};
+
+// Define type for aggregated org activity data
+export interface OrgActivityData {
+    activityByUser: { 
+        [login: string]: { 
+            commitCount: number; 
+            prAuthoredCount: number; 
+            issueAuthoredCount: number; 
+            prCommentCount: number; 
+        } 
+    };
+    members: OrgMember[];
+}
+
+// Define return type for the function, including potential stale info
+export interface OrgActivityResult extends OrgActivityData {
+    isStale: boolean;
+    error?: any; // Store original error info if stale
+}
+
+/**
+ * Fetches comprehensive activity data for all org members.
+ */
+export const getOrgActivityData = async (org: string, targetRepos: string[] | null, since?: string, until?: string): Promise<OrgActivityResult> => {
+    const repoKeyPart = targetRepos && targetRepos.length > 0 ? [...targetRepos].sort().join('_') : 'all';
+    const sinceKeyPart = since ? new Date(since).toISOString().split('T')[0] : 'start';
+    const untilKeyPart = until ? new Date(until).toISOString().split('T')[0] : 'now';
+    const cacheKey = `org-${org}-activity-repos_${repoKeyPart}-since_${sinceKeyPart}-until_${untilKeyPart}`;
+
+    const { data: cachedData, stale } = await readCache<OrgActivityData>(cacheKey, ORG_ACTIVITY_CACHE_TTL);
+    if (cachedData) {
+        console.log(`Cache hit for org activity: ${cacheKey} ${stale ? '(stale)' : ''}`);
+        return { ...cachedData, isStale: stale }; 
+    }
+    console.log(`Cache miss for org activity: ${cacheKey}. Fetching from API...`);
+
+    try {
+        let members: OrgMember[] = [];
+        try { members = await getOrgMembers(org); } catch (error) { throw error; } // Relies on getOrgMembers cache
+        const memberLogins = members.map(m => m.login);
+
+        // Fetch details for each member - CONSIDER OPTIMIZING: This is very API heavy!
+        const activityPromises = memberLogins.map(login => 
+            Promise.all([
+                searchUserCommits(org, login, targetRepos, since), // Use since only, as until isn't well supported in search
+                searchUserPRsAuthored(org, login, targetRepos, since),
+                searchUserIssuesAuthored(org, login, targetRepos, since),
+                searchUserPRComments(org, login, targetRepos, since),
+            ]).then(([commits, prs, issues, comments]) => ({ 
+                login, 
+                commits, 
+                prs, 
+                issues, 
+                comments 
+            }))
+        );
+        
+        const memberActivities = await Promise.all(activityPromises);
+
+        // Structure data for the dashboard
+        const activityByUser = memberActivities.reduce((acc, activity) => {
+            const loginLower = activity.login.toLowerCase();
+            acc[loginLower] = {
+                commitCount: activity.commits.length,
+                prAuthoredCount: activity.prs.length,
+                issueAuthoredCount: activity.issues.length,
+                prCommentCount: activity.comments.length,
+            };
+            return acc;
+        }, {} as { [key: string]: { commitCount: number; prAuthoredCount: number; issueAuthoredCount: number; prCommentCount: number; } });
+
+        const result: OrgActivityData = { activityByUser, members };
+        await writeCache(cacheKey, result);
+        return { ...result, isStale: false }; 
+    } catch (error) {
+        const { data: staleData } = await readCache<OrgActivityData>(cacheKey, 0, { allowStale: true });
+        if (staleData) {
+            console.warn(`API error fetching org activity, serving stale cache. Error:`, error instanceof Error ? error.message : error);
+            const errorPayload = 
+                error instanceof SamlSsoError ? { ssoRequired: true, ssoUrl: error.ssoUrl, message: error.message } :
+                error instanceof RateLimitError ? { rateLimitExceeded: true, resetTimestamp: error.resetTimestamp, message: error.message } :
+                { message: error instanceof Error ? error.message : 'Unknown error' };
+            // Return stale data marked as stale, including the error context
+            return { ...staleData, isStale: true, error: errorPayload };
+        }
+        handleOctokitError(error, `Error fetching org activity data`);
+        throw new Error('Unhandled error in getOrgActivityData after error handler.');
+    }
+};
 
 export default octokit; // Export the initialized client if needed elsewhere 
