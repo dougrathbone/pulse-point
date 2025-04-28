@@ -14,32 +14,43 @@ Okay, let's add the project structure and execution details to the PRD. We'll al
 * **Testing Framework:** Jest (for unit and potentially integration tests)
 * **Frontend Styling:** Tailwind CSS
 * **API Client Libraries:** Use official or well-maintained libraries for interacting with GitHub, Slack, Linear, and Notion APIs (e.g., Octokit for GitHub, Bolt for Slack).
+* **Configuration:**
+    * **Secrets (`.env`):** API keys (GitHub PAT, Slack, Claude) are stored in a root `.env` file (ignored by git).
+    * **Settings (`settings.ts`):** Non-secret config like the target GitHub Organization (`TARGET_ORG`) and optionally specific repositories (`TARGET_REPOS`) are set in `settings.ts` at the project root.
 * **Core Logic:**
-    * Identify team members by fetching members of a configured **GitHub Organization**.
-    * Fetch relevant activity data (commits, PRs, etc.) for repositories within that organization, filtering by the identified members.
-    * Associate GitHub user activity with other services (Slack, Linear, Notion) by matching **email addresses** retrieved from GitHub user profiles (requires appropriate permissions/scopes for the GitHub token) against user emails in other services.
-* **Background Jobs:** Use `node-cron` for scheduling periodic background data fetching tasks (e.g., refreshing organization members, fetching daily activity).
-* **Data Storage:** Flat-file system (e.g., JSON files) for storing application data, potentially including cached organization members, fetched activity, and correlation results. Organize files logically (e.g., by organization, by data source, by date range).
+    * Identifies team members by fetching members of the `TARGET_ORG` from GitHub.
+    * Fetches commit activity for these members across either all accessible org repositories or the specific `TARGET_REPOS` list.
+    * Handles GitHub SAML SSO requirements by detecting 403 errors with specific headers and prompting the user to authenticate via a provided URL in the frontend.
+    * (Future) Associate GitHub user activity with other services via email matching.
+* **Caching:**
+    * Uses a simple flat-file JSON cache (`.cache/github/`) to store results from the GitHub API (org members, repos, aggregated commits) with configurable TTLs to reduce API usage.
+    * The cache directory is ignored by git.
+* **Background Jobs:** (Not yet implemented) Use `node-cron` for scheduling periodic background data fetching tasks.
+* **Data Storage:** Currently uses the file system cache. No persistent database is implemented yet.
 * **Deployment:** (To be decided - e.g., Vercel, Netlify, AWS, Google Cloud) Needs environment variable management for API keys/secrets. Ensure the deployment environment supports Node.js and can handle persistent file storage if needed, or consider strategies for statelessness if files are generated on-the-fly or stored externally (like S3).
 
 **6.1. Project Structure**
 
 ```
 pulsepoint/
+├── .cache            # Directory for storing cached API responses (ignored by git)
+│   └── /github       # GitHub specific cache
 ├── /docs             # Documentation files (e.g., PRD, setup guides)
 ├── /src              # Source code files (TypeScript/TSX)
 │   ├── /components   # React frontend components (.tsx)
-│   ├── /config       # Application configuration (e.g., settings.ts)
+│   ├── /pages        # Top-level page components (e.g., UserDetailPage.tsx)
 │   ├── /server       # Backend Node.js code (.ts)
 │   │   ├── /api      # API route handlers (e.g., orgRoutes.ts)
-│   │   ├── /services # Business logic, API clients (e.g., githubService.ts, slackService.ts)
+│   │   ├── /services # Business logic, API clients (e.g., githubService.ts)
+│   │   ├── /utils    # Server-side utilities (e.g., cache.ts)
 │   │   └── index.ts  # Server entry point
 │   ├── /shared       # Shared types or utilities (e.g., types.ts)
 │   └── index.tsx     # Frontend entry point
-│   └── App.tsx       # Main frontend application component
+│   └── App.tsx       # Main frontend application component (incl. routing)
 │   └── index.css     # Main CSS file for Tailwind
 │   └── index.html    # HTML entry point for Vite
 ├── /tests            # Test files (.test.ts or .spec.ts)
+├── settings.ts       # Root configuration file
 ├── jest.config.js    # Jest configuration
 ├── package.json      # Project dependencies and scripts
 ├── postcss.config.js # PostCSS configuration (for Tailwind)

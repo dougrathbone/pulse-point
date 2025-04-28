@@ -1,4 +1,5 @@
 import React from 'react';
+import { Link } from 'react-router-dom'; // Import Link
 
 // Placeholder type
 type Commit = any; 
@@ -14,58 +15,46 @@ interface TeamActivityDashboardProps {
 
 const TeamActivityDashboard: React.FC<TeamActivityDashboardProps> = ({ commitsByAuthor, teamMembers }) => {
 
-  // Create a map for quick lookup of member names by login
-  const memberMap = teamMembers.reduce((acc, member) => {
-      acc[member.login.toLowerCase()] = member;
-      return acc;
-  }, {} as { [login: string]: OrgMember });
+  // Calculate commit counts and combine with member info
+  const memberStats = teamMembers.map(member => {
+    const login = member.login.toLowerCase();
+    const commitCount = commitsByAuthor[login]?.length || 0;
+    return {
+      ...member,
+      commitCount,
+      displayName: member.name ? `${member.name} (${member.login})` : member.login
+    };
+  });
 
-  // Ensure all fetched members are represented, even with 0 commits in period
-  const displayData = teamMembers.reduce((acc, member) => {
-      const login = member.login.toLowerCase();
-      acc[login] = commitsByAuthor[login] || [];
-      return acc;
-  }, {} as { [authorLogin: string]: Commit[] });
+  // Sort members by commit count (descending)
+  memberStats.sort((a, b) => b.commitCount - a.commitCount);
 
-  // Sort by login for consistent order
-  const sortedLogins = Object.keys(displayData).sort();
-
-  if (sortedLogins.length === 0) {
-    return <p className="text-gray-500">No team members found in the organization or no activity.</p>;
+  if (memberStats.length === 0) {
+    return <p className="text-gray-500">No team members found in the organization.</p>;
   }
 
   return (
-    <div className="space-y-6">
-      {sortedLogins.map((authorLogin) => {
-        const commits = displayData[authorLogin];
-        const memberInfo = memberMap[authorLogin]; // Get member info (incl. name)
-        const displayName = memberInfo?.name ? `${memberInfo.name} (${authorLogin})` : authorLogin;
-
+    <div className="space-y-4">
+      {memberStats.map((member) => {
+        const commits = commitsByAuthor[member.login.toLowerCase()] || [];
         return (
-          <div key={authorLogin} className="bg-white shadow-md rounded-lg p-4">
-            <h3 className="text-lg font-semibold mb-3 text-gray-800 border-b pb-2">
-              {/* Display name and username */} 
-              {displayName} - Commits: {commits.length}
-            </h3>
-            {commits.length > 0 ? (
-              <ul className="space-y-2">
-                {commits.map((commit) => (
-                  <li key={commit.sha} className="border-l-4 border-indigo-500 pl-3 text-sm">
-                    <a href={commit.html_url} target="_blank" rel="noopener noreferrer" className="hover:underline text-indigo-600 font-medium">
-                      {commit.sha.substring(0, 7)}
-                    </a>
-                    <p className="truncate text-gray-700" title={commit.commit.message}>
-                      {commit.commit.message.split('\n')[0]}
-                    </p>
-                    <p className="text-gray-500 text-xs">
-                      {new Date(commit.commit.author?.date || Date.now()).toLocaleString()}
-                    </p>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-gray-500 text-sm italic">No commits found in the selected period.</p>
-            )}
+          <div key={member.login} className="bg-white shadow-md rounded-lg p-4 transition duration-150 ease-in-out hover:shadow-lg">
+            <Link 
+                to={`/user/${member.login}`}
+                className="block hover:bg-gray-50 -m-4 p-4 rounded-lg" // Make the whole block linkable (optional style)
+            >
+                <h3 className="text-lg font-semibold text-gray-800">
+                  {member.displayName} - Commits: {member.commitCount}
+                  {/* Placeholder for PRs/Comments later */}
+                  {/* - PRs: ? - Comments: ? */} 
+                </h3>
+            </Link>
+
+            {/* Optionally keep showing top few commits here, or remove for cleaner summary */} 
+            {/* {commits.length > 0 ? ( ... ) : ( ... )} */} 
+            <p className="text-sm text-gray-500 mt-1">
+                Click for detailed view.
+            </p>
           </div>
         );
       })}

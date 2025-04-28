@@ -143,6 +143,7 @@ interface OrgMember {
 const MEMBERS_CACHE_TTL = 1 * 60 * 60 * 1000; // 1 hour
 const REPOS_CACHE_TTL = 1 * 60 * 60 * 1000; // 1 hour
 const COMMITS_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
+const USER_DATA_CACHE_TTL = 15 * 60 * 1000; // 15 minutes for user-specific data
 // --- End Cache Settings ---
 
 /**
@@ -335,6 +336,76 @@ export const getOrgMemberCommits = async (org: string, targetRepos: string[] | n
   await writeCache(cacheKey, allMatchingCommits); // Cache the final result
 
   return allMatchingCommits;
+};
+
+/**
+ * Searches for commits by a specific author within an org and optional repos.
+ */
+export const searchUserCommits = async (org: string, username: string, targetRepos: string[] | null, since?: string, until?: string): Promise<any[]> => {
+    const repoQualifier = targetRepos && targetRepos.length > 0 
+        ? targetRepos.map(repo => `repo:${org}/${repo}`).join(' ') 
+        : `org:${org}`;
+    const dateQualifier = since ? `committer-date:>${since}` : ''; // Adjust if using `author-date`
+    // Note: GitHub search API date range format differs slightly from commits endpoint.
+    // It might be simpler to filter by date after fetching if precise range is needed.
+    
+    const query = `author:${username} ${repoQualifier} ${dateQualifier}`;
+    const cacheKey = `user-${username}-commits-query_${Buffer.from(query).toString('base64')}`; // Basic cache key from query
+
+    const cachedCommits = await readCache<any[]>(cacheKey, USER_DATA_CACHE_TTL);
+    if (cachedCommits) {
+        console.log(`Cache hit for user commits: ${username}`);
+        return cachedCommits;
+    }
+
+    console.log(`Cache miss for user commits: ${username}. Query: ${query}`);
+    try {
+        const results = await octokit.paginate(octokit.search.commits, {
+            q: query,
+            sort: 'committer-date', // or author-date
+            order: 'desc',
+            per_page: 100,
+        });
+        await writeCache(cacheKey, results);
+        return results;
+    } catch (error) {
+        handleOctokitError(error, `Error searching commits for user ${username}`);
+        throw new Error('Unhandled error in searchUserCommits after error handler.');
+    }
+};
+
+/**
+ * Searches for issues and PRs created by a specific author within an org and optional repos.
+ */
+export const searchUserIssuesAndPRs = async (org: string, username: string, targetRepos: string[] | null, since?: string, until?: string): Promise<any[]> => {
+    const repoQualifier = targetRepos && targetRepos.length > 0 
+        ? targetRepos.map(repo => `repo:${org}/${repo}`).join(' ') 
+        : `org:${org}`;
+    const dateQualifier = since ? `created:>${since}` : '';
+    // Combine issue and PR search
+    const query = `author:${username} ${repoQualifier} ${dateQualifier}`;
+    const cacheKey = `user-${username}-issuesprs-query_${Buffer.from(query).toString('base64')}`;
+
+    const cachedIssues = await readCache<any[]>(cacheKey, USER_DATA_CACHE_TTL);
+    if (cachedIssues) {
+        console.log(`Cache hit for user issues/PRs: ${username}`);
+        return cachedIssues;
+    }
+
+    console.log(`Cache miss for user issues/PRs: ${username}. Query: ${query}`);
+    try {
+        const results = await octokit.paginate(octokit.search.issuesAndPullRequests, {
+            q: query,
+            sort: 'created',
+            order: 'desc',
+            per_page: 100,
+        });
+        await writeCache(cacheKey, results);
+        return results;
+    } catch (error) {
+        handleOctokitError(error, `Error searching issues/PRs for user ${username}`);
+        throw new Error('Unhandled error in searchUserIssuesAndPRs after error handler.');
+    }
 };
 
 // Add more functions here for fetching issues, etc.

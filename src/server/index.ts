@@ -85,8 +85,59 @@ const handleGetOrgCommits = async (req: Request, res: Response, next: NextFuncti
   }
 };
 
+// Define the async handler function for user details
+const handleGetUserDetails = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const { username } = req.params;
+    const { since, until } = req.query;
+
+    if (!TARGET_ORG) {
+        const err = new Error('TARGET_ORG not configured in settings.ts');
+        (err as any).status = 400;
+        return next(err);
+    }
+    if (!username) {
+        const err = new Error('Username parameter is missing.');
+        (err as any).status = 400;
+        return next(err);
+    }
+
+    try {
+        console.log(`Fetching details for user: ${username}, Org: ${TARGET_ORG}`);
+        
+        // Fetch data concurrently
+        const [commits, issuesAndPRs] = await Promise.all([
+            githubService.searchUserCommits(TARGET_ORG, username, TARGET_REPOS, since as string | undefined, until as string | undefined),
+            githubService.searchUserIssuesAndPRs(TARGET_ORG, username, TARGET_REPOS, since as string | undefined, until as string | undefined)
+        ]);
+
+        // TODO: Add call to Claude API summarization service here
+        const aiSummary = `AI summary for ${username} is pending implementation.`;
+
+        res.json({ 
+            username,
+            commits, 
+            issuesAndPRs, 
+            aiSummary 
+        });
+
+    } catch (error) {
+        // Handle SAML error specifically if needed (might occur on search too)
+        if (error instanceof SamlSsoError) {
+            res.status(error.status).json({
+                ssoRequired: true,
+                ssoUrl: error.ssoUrl,
+                message: error.message,
+            });
+        } else {
+            console.error(`API Error fetching details for user ${username}:`, error);
+            next(error); 
+        }
+    }
+};
+
 // Update API route to use the new handler
 app.get('/api/org/commits', handleGetOrgCommits);
+app.get('/api/user/:username/details', handleGetUserDetails); // Add new route
 
 // Remove old team commit handler/route
 // app.get('/api/team/commits', handleGetTeamCommits);

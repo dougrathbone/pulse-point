@@ -39,6 +39,9 @@ GITHUB_TOKEN=your_github_pat_here
 # Slack Bot Token (add later)
 # SLACK_BOT_TOKEN=your_slack_bot_token_here
 
+# Claude API Key (for AI summaries - add later)
+# CLAUDE_API_KEY=your_claude_api_key_here
+
 # Other secrets...
 ```
 **Important:** Never commit your `.env` file to version control.

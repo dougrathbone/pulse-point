@@ -47,6 +47,8 @@
   },
   "dependencies": {
     "@octokit/rest": "^21.1.1",
-    "dotenv": "^16.5.0"
+    "@types/react-router-dom": "^5.3.3",
+    "dotenv": "^16.5.0",
+    "react-router-dom": "^7.5.2"
   }
 }
