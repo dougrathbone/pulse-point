@@ -29,8 +29,9 @@ interface UserDetailsResponse {
     issuesAuthored: IssueItem[]; 
     pullRequestCommentsMade: PullRequestCommentItem[]; // New field
     aiSummary: string;
-    isStale?: boolean; // Add stale flag
-    error?: any; // Add error context if stale
+    isStale?: boolean;
+    error?: any;
+    timestamp?: number; // Add timestamp
 }
 
 interface RateLimitErrorResponse {
@@ -62,67 +63,67 @@ const UserDetailPage: React.FC = () => {
     const [isStale, setIsStale] = useState<boolean>(false);
     const [staleError, setStaleError] = useState<any>(null);
 
-    useEffect(() => {
+    // Expose fetchData for refresh
+    const fetchData = React.useCallback(async (forceRefresh = false) => {
         if (!username) return;
-
-        const fetchData = async () => {
-            setLoading(true);
-            setError(null);
-            setSsoUrl(null);
-            setUserDetails(null);
-            setRateLimitInfo(null);
-            setIsStale(false);
-            setStaleError(null);
-            try {
-                const sinceDate = new Date();
-                sinceDate.setDate(sinceDate.getDate() - 30); // Match 30-day range
-                const sinceISO = sinceDate.toISOString();
-
-                const res = await fetch(`/api/user/${username}/details?since=${sinceISO}`);
-                
-                if (res.status === 403) { // Check for SAML SSO error
-                    const errorData = await res.json(); // Assuming backend sends SamlErrorResponse structure
-                    if (errorData.ssoRequired && errorData.ssoUrl) {
-                        setError(errorData.message);
-                        setSsoUrl(errorData.ssoUrl);
-                        return; 
-                    }
+        setLoading(true);
+        setError(null);
+        setSsoUrl(null);
+        setUserDetails(null);
+        setRateLimitInfo(null);
+        setIsStale(false);
+        setStaleError(null);
+        try {
+            const sinceDate = new Date();
+            sinceDate.setDate(sinceDate.getDate() - 30);
+            const sinceISO = sinceDate.toISOString();
+            const url = `/api/user/${username}/details?since=${sinceISO}${forceRefresh ? '&refresh=true' : ''}`;
+            const res = await fetch(url);
+            
+            if (res.status === 403) { // Check for SAML SSO error
+                const errorData = await res.json(); // Assuming backend sends SamlErrorResponse structure
+                if (errorData.ssoRequired && errorData.ssoUrl) {
+                    setError(errorData.message);
+                    setSsoUrl(errorData.ssoUrl);
+                    return; 
                 }
-                if (res.status === 429) {
-                    const errorData: RateLimitErrorResponse = await res.json();
-                    if (errorData.rateLimitExceeded) {
-                        console.warn("Rate Limit Exceeded:", errorData.message);
-                        setError(errorData.message);
-                        setRateLimitInfo({ resetTimestamp: errorData.resetTimestamp });
-                        return; 
-                    }
-                }
-                if (!res.ok) {
-                    const errorData = await res.json().catch(() => ({}));
-                    throw new Error(`Error fetching user details: ${res.statusText} (${res.status}) - ${errorData?.message || 'Unknown API error'}`);
-                }
-                const data: UserDetailsResponse = await res.json();
-                setUserDetails(data);
-                setIsStale(data.isStale || false);
-                if (data.isStale && data.error) {
-                    setStaleError(data.error);
-                    setError(null); 
-                    setRateLimitInfo(null);
-                    setSsoUrl(null);
-                }
-
-            } catch (err: any) {
-                console.error("Fetch error:", err);
-                 if (!ssoUrl && !rateLimitInfo) {
-                    setError(err.message || 'Failed to fetch user details');
-                 }
-            } finally {
-                setLoading(false);
             }
-        };
+            if (res.status === 429) {
+                const errorData: RateLimitErrorResponse = await res.json();
+                if (errorData.rateLimitExceeded) {
+                    console.warn("Rate Limit Exceeded:", errorData.message);
+                    setError(errorData.message);
+                    setRateLimitInfo({ resetTimestamp: errorData.resetTimestamp });
+                    return; 
+                }
+            }
+            if (!res.ok) {
+                const errorData = await res.json().catch(() => ({}));
+                throw new Error(`Error fetching user details: ${res.statusText} (${res.status}) - ${errorData?.message || 'Unknown API error'}`);
+            }
+            const data: UserDetailsResponse = await res.json();
+            setUserDetails(data);
+            setIsStale(data.isStale || false);
+            if (data.isStale && data.error) {
+                setStaleError(data.error);
+                setError(null); 
+                setRateLimitInfo(null);
+                setSsoUrl(null);
+            }
 
-        fetchData();
-    }, [username]); // Re-fetch if username changes
+        } catch (err: any) {
+            console.error("Fetch error:", err);
+             if (!ssoUrl && !rateLimitInfo) {
+                setError(err.message || 'Failed to fetch user details');
+             }
+        } finally {
+            setLoading(false);
+        }
+    }, [username]); // Add username dependency
+
+    useEffect(() => {
+        fetchData(); // Initial fetch
+    }, [fetchData]);
 
     const handleAuthenticate = () => {
         if (ssoUrl) {
@@ -150,7 +151,23 @@ const UserDetailPage: React.FC = () => {
     return (
         <div className="p-4">
             <Link to="/" className="text-blue-600 hover:underline mb-4 inline-block">&larr; Back to Dashboard</Link>
-            <h2 className="text-2xl font-bold mb-4">User Details: {username}</h2>
+            <div className="flex justify-between items-center mb-4">
+                <h2 className="text-2xl font-bold">User Details: {username}</h2>
+                 <div className="flex items-center space-x-4">
+                    {userDetails?.timestamp && (
+                        <p className="text-xs text-gray-500">
+                            Data as of: {new Date(userDetails.timestamp).toLocaleString()}
+                        </p>
+                    )}
+                    <button 
+                        onClick={() => fetchData(true)} 
+                        disabled={loading} 
+                        className="bg-indigo-500 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold py-1 px-3 rounded text-sm"
+                    >
+                        {loading ? 'Refreshing...' : 'Refresh'}
+                    </button>
+                 </div>
+            </div>
             
             {loading && <p className="text-center text-gray-500 py-8">Loading user details...</p>}
             

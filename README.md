@@ -89,4 +89,19 @@ Access the application in your browser at `http://localhost:3000`.
     ```bash
     npm run start
     ```
-    The application will be served from `http://localhost:3001` (or the port specified by the `PORT` environment variable). 
+    The application will be served from `http://localhost:3001` (or the port specified by the `PORT` environment variable).
+
+## Testing
+
+This project uses [Jest](https://jestjs.io/) for unit and integration testing.
+
+*   **Run all tests:**
+    ```bash
+    npm test
+    ```
+*   **Run tests in watch mode:**
+    ```bash
+    npm run test:watch
+    ```
+
+Refer to `docs/project-testguide.md` for testing standards and conventions. 

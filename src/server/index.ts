@@ -2,7 +2,8 @@ import express, { Request, Response, NextFunction } from 'express';
 import path from 'path'; // Import path module
 import * as githubService from './services/githubService'; // Import GitHub service
 import { SamlSsoError, RateLimitError } from './services/githubService'; // Import both custom errors
-import { TARGET_ORG, TARGET_REPOS } from '../../settings'; // Update path
+import { TARGET_ORG, TARGET_REPOS, CACHE_MAX_AGE_HOURS } from '../../settings'; // Update path
+import { readCache, writeCache } from './utils/cache';
 
 const app = express();
 const port = process.env.PORT || 3001; // Use environment variable or default
@@ -30,28 +31,70 @@ const handleGetOrgDashboard = async (req: Request, res: Response, next: NextFunc
     return next(err);
   }
 
+  // Define cache key
+  const repoKeyPart = TARGET_REPOS ? TARGET_REPOS.join(',') : '(all org repos)';
+  const sinceKeyPart = sinceISO.replace(/[-:]/g, '');
+  const untilKeyPart = untilISO ? untilISO.replace(/[-:]/g, '') : '';
+  const cacheKey = `org-${TARGET_ORG}-activity-repos_${repoKeyPart}-since_${sinceKeyPart}-until_${untilKeyPart}`;
+  const dailyCacheMaxAgeMs = CACHE_MAX_AGE_HOURS * 60 * 60 * 1000;
+
+  // --- Initial Daily Cache Check --- 
   try {
-    const repoList = (TARGET_REPOS && TARGET_REPOS.length > 0) ? TARGET_REPOS.join(', ') : '(all org repos)';
+    const { data: dailyCachedData, timestamp: dailyTimestamp } = await readCache<githubService.OrgActivityData>(cacheKey, dailyCacheMaxAgeMs);
+    if (dailyCachedData) {
+        console.log(`Cache hit (within ${CACHE_MAX_AGE_HOURS} hours) for org dashboard.`);
+        // Structure the response as if it were fresh
+         const dashboardData = {
+            members: dailyCachedData.members,
+            activityByUser: dailyCachedData.activityByUser
+         };
+        res.json({ ...dashboardData, isStale: false, timestamp: dailyTimestamp }); // Send response without return
+        return; // Exit the handler after sending response
+    }
+  } catch (cacheReadError) {
+      console.error("Initial cache read failed:", cacheReadError);
+      // Proceed to fetch fresh data if initial read fails
+  }
+  // --- End Initial Check --- 
+
+  console.log(`No suitable daily cache found, fetching fresh data for org dashboard...`);
+  try {
+    const repoList = TARGET_REPOS ? TARGET_REPOS.join(', ') : '(all org repos)';
     console.log(`Fetching dashboard data for org: ${TARGET_ORG}, Repos: ${repoList}`);
     
-    // Call the service function which handles caching and stale data internally
-    const orgActivityResult = await githubService.getOrgActivityData(
+    // Call the service function (throws error on fail, only returns fresh data)
+    const orgActivityData = await githubService.getOrgActivityData(
         TARGET_ORG, TARGET_REPOS, sinceISO, untilISO
     );
     
-    // Pass the entire result (which includes isStale and error flags if stale) 
-    res.json(orgActivityResult);
+    // Send fresh data
+    res.json({ ...orgActivityData, isStale: false });
 
   } catch (error) {
-    // Handle errors NOT caught by the service layer's stale cache logic
-    // (e.g., initial member fetch fails AND no stale cache exists)
-    if (error instanceof SamlSsoError) {
-        res.status(error.status).json({ ssoRequired: true, ssoUrl: error.ssoUrl, message: error.message });
-    } else if (error instanceof RateLimitError) {
-         res.status(error.status).json({ rateLimitExceeded: true, resetTimestamp: error.resetTimestamp, message: error.message });
-    } else {
-        console.error("API Error fetching org dashboard data:", error);
-        next(error); 
+    console.warn("API Error encountered, attempting to serve stale cache:", error instanceof Error ? error.message : error);
+    // Attempt stale read on error
+    try {
+        const { data: staleData, timestamp } = await readCache<githubService.OrgActivityData>(cacheKey, Infinity);
+        if (staleData) {
+             // Structure response with stale data and error context
+             const errorPayload = {
+                 message: error instanceof Error ? error.message : error,
+                 isStale: true,
+                 timestamp: timestamp
+             };
+             res.status(200).json({ ...staleData, isStale: true, error: errorPayload, timestamp });
+        } else {
+             // No stale data available, handle original error
+             if (error instanceof SamlSsoError) {
+                 res.status(error.status).json({ ssoRequired: true, ssoUrl: error.ssoUrl, message: error.message });
+             } else if (error instanceof RateLimitError) {
+                  res.status(error.status).json({ rateLimitExceeded: true, resetTimestamp: error.resetTimestamp, message: error.message });
+             } else {
+                 next(error); // Pass original API error
+             }
+        }
+    } catch (cacheReadError) {
+        next(error); // Error reading cache, pass original API error
     }
   }
 };
@@ -75,6 +118,24 @@ const handleGetUserDetails = async (req: Request, res: Response, next: NextFunct
         return next(err);
     }
 
+    // Define cache key
+    const cacheKey = `user-${username}-details-since_${sinceISO.replace(/[-:]/g, '')}-until_${untilISO ? untilISO.replace(/[-:]/g, '') : ''}`;
+    const dailyCacheMaxAgeMs = CACHE_MAX_AGE_HOURS * 60 * 60 * 1000;
+
+    // --- Initial Daily Cache Check --- 
+    try {
+        const { data: dailyCachedDetails, timestamp } = await readCache<any>(cacheKey, dailyCacheMaxAgeMs);
+        if (dailyCachedDetails) {
+            console.log(`Cache hit (within ${CACHE_MAX_AGE_HOURS} hours) for user details: ${username}`);
+            res.json({ ...dailyCachedDetails, isStale: false, timestamp }); // Send response without return
+            return; // Exit the handler
+        }
+    } catch (cacheReadError) {
+        console.error("Initial user detail cache read failed:", cacheReadError);
+    }
+    // --- End Initial Check --- 
+
+    console.log(`No suitable daily cache found, fetching fresh details for user: ${username}...`);
     try {
         console.log(`Fetching details for user: ${username}, Org: ${TARGET_ORG}`);
         
@@ -112,8 +173,8 @@ const handleGetUserDetails = async (req: Request, res: Response, next: NextFunct
         // Placeholder for AI summary
         const aiSummary = `AI summary for ${username} is pending implementation.`;
 
-        // Assemble final payload - assume data is fresh if we get here
-        res.json({ 
+        // Assemble payload - mark as fresh
+        const responsePayload = { 
             username,
             summary: {
                 commitCount: userCommits.length,
@@ -132,22 +193,36 @@ const handleGetUserDetails = async (req: Request, res: Response, next: NextFunct
             issuesAuthored: userIssuesAuthored,
             pullRequestCommentsMade: userPRComments,
             aiSummary,
-            isStale: false // Mark as fresh data
-        });
+            isStale: false // Mark as fresh
+        };
+        await writeCache(cacheKey, responsePayload);
+        res.json({ ...responsePayload, isStale: false });
 
     } catch (error) {
-         // Handle errors from the Promise.all or calculations
-         if (error instanceof SamlSsoError) {
-            res.status(error.status).json({ ssoRequired: true, ssoUrl: error.ssoUrl, message: error.message });
-        } else if (error instanceof RateLimitError) {
-             res.status(error.status).json({ rateLimitExceeded: true, resetTimestamp: error.resetTimestamp, message: error.message });
-        } else {
-            console.error(`API Error fetching details for user ${username}:`, error);
-            next(error); 
+        console.warn(`API Error fetching details for ${username}, attempting stale cache...`);
+        // Attempt stale read on error
+        try {
+            const { data: staleDetails, timestamp } = await readCache<any>(cacheKey, Infinity);
+            if (staleDetails) {
+                 const errorPayload = {
+                     message: error instanceof Error ? error.message : error,
+                     isStale: true,
+                     timestamp: timestamp
+                 };
+                 res.status(200).json({ ...staleDetails, isStale: true, error: errorPayload, timestamp });
+            } else {
+                 // No stale data, handle original error
+                 if (error instanceof SamlSsoError) {
+                    res.status(error.status).json({ ssoRequired: true, ssoUrl: error.ssoUrl, message: error.message });
+                } else if (error instanceof RateLimitError) {
+                     res.status(error.status).json({ rateLimitExceeded: true, resetTimestamp: error.resetTimestamp, message: error.message });
+                } else {
+                    next(error); // Pass original API error
+                }
+            }
+        } catch(cacheReadError) {
+             next(error); // Pass original API error
         }
-        // NOTE: We are currently NOT attempting to serve stale data for the *entire* user detail page 
-        // if *any* of the concurrent fetches fail after a cache miss.
-        // Implementing that would require more complex logic to combine potentially stale partial results.
     }
 };
 

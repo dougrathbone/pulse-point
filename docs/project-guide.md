@@ -18,12 +18,14 @@ Okay, let's add the project structure and execution details to the PRD. We'll al
     * **Secrets (`.env`):** API keys (GitHub PAT, Slack, Claude) are stored in a root `.env` file (ignored by git).
     * **Settings (`settings.ts`):** Non-secret config like the target GitHub Organization (`TARGET_ORG`) and optionally specific repositories (`TARGET_REPOS`) are set in `settings.ts` at the project root.
 * **Core Logic:**
-    * Identifies team members by fetching members of the `TARGET_ORG` from GitHub.
-    * Fetches commit activity for these members across either all accessible org repositories or the specific `TARGET_REPOS` list.
-    * Handles GitHub SAML SSO requirements by detecting 403 errors with specific headers and prompting the user to authenticate via a provided URL in the frontend.
-    * (Future) Associate GitHub user activity with other services via email matching.
+    * Identifies team members by fetching members (incl. name) of the `TARGET_ORG`.
+    * Fetches relevant activity data (commits authored, PRs authored, Issues authored, PR comments made) for these members across specified/all org repos.
+    * Calculates basic metrics like PR turnaround time (created to close).
+    * Handles GitHub SAML SSO and Rate Limit errors gracefully, including serving stale cache data when available.
+    * (Future) Associate GitHub user activity via email matching.
 * **Caching:**
-    * Uses a simple flat-file JSON cache (`.cache/github/`) to store results from the GitHub API (org members, repos, aggregated commits) with configurable TTLs to reduce API usage.
+    * Uses a simple flat-file JSON cache (`.cache/github/`) for GitHub API results (org members, repos, aggregated/user activity) with configurable TTLs.
+    * Includes a "serve stale on error" mechanism: if fetching fresh data fails (e.g., due to rate limits), it attempts to return the last known cached version, marking it as stale in the API response.
     * The cache directory is ignored by git.
 * **Background Jobs:** (Not yet implemented) Use `node-cron` for scheduling periodic background data fetching tasks.
 * **Data Storage:** Currently uses the file system cache. No persistent database is implemented yet.
@@ -82,4 +84,4 @@ pulsepoint/
 * Test files will reside in the `/tests` directory.
 * Jest (`jest.config.js`) should be configured to find and run tests within `/tests`.
 * Test files should follow a naming convention like `*.test.ts` or `*.spec.ts`.
-* Add a script to `package.json` for running tests: `"test": "jest"` or `"test": "jest --watch"` for interactive testing during development.
+* Add a script to `package.json`

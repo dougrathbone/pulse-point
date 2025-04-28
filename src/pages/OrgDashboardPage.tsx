@@ -1,27 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import TeamActivityDashboard from '@/components/TeamActivityDashboard';
 import { TARGET_ORG } from '@/../settings'; // Import TARGET_ORG
+// Import service types using path alias
+import { OrgActivityData, OrgMember, UserActivitySummary } from '@/server/services/githubService';
 
 // Define types 
-type Commit = any; // Keep for now, though not directly used here
-interface OrgMember {
-    login: string;
-    name?: string | null;
-}
-// Structure for dashboard data per user
-interface UserActivitySummary {
-    commitCount: number;
-    prAuthoredCount: number;
-    issueAuthoredCount: number;
-    prCommentCount: number;
-}
-// Updated response structure now includes isStale and optional error
-interface OrgDashboardResponse {
-    members: OrgMember[];
-    activityByUser: { [login: string]: UserActivitySummary };
-    isStale?: boolean;
-    error?: any; // Store error details if stale
-}
+// type Commit = any; // Keep for now, though not directly used here
+// interface OrgMember { ... }
+// interface UserActivitySummary { ... }
+// interface OrgDashboardResponse { ... }
 
 interface SamlErrorResponse {
     ssoRequired: true;
@@ -35,75 +22,65 @@ interface RateLimitErrorResponse {
     message: string;
 }
 
+// API Response structure 
+interface OrgDashboardApiResponse {
+    // Include fields from OrgActivityData directly
+    members: OrgMember[];
+    activityByUser: { [login: string]: UserActivitySummary };
+    // Add optional status flags
+    isStale?: boolean;
+    error?: any; 
+    timestamp?: number;
+}
+
 const OrgDashboardPage: React.FC = () => {
-  const [activityByUser, setActivityByUser] = useState<{ [login: string]: UserActivitySummary }>({});
-  const [orgMembers, setOrgMembers] = useState<OrgMember[]>([]);
+  const [activityData, setActivityData] = useState<OrgDashboardApiResponse | null>(null);
+  // Separate state for errors detected during fetch
+  const [fetchError, setFetchError] = useState<any>(null);
   const [loading, setLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
-  const [ssoUrl, setSsoUrl] = useState<string | null>(null); 
-  const [rateLimitInfo, setRateLimitInfo] = useState<{ resetTimestamp: number | null } | null>(null);
-  const [isStale, setIsStale] = useState<boolean>(false);
-  const [staleError, setStaleError] = useState<any>(null);
+
+  // Expose fetchData for refresh button
+  const fetchData = React.useCallback(async (forceRefresh = false) => { // Add forceRefresh flag
+      setLoading(true);
+      setFetchError(null);
+      // Don't clear data immediately if just refreshing
+      // setActivityData(null); 
+      try {
+          const sinceDate = new Date();
+          sinceDate.setDate(sinceDate.getDate() - 30); 
+          const sinceISO = sinceDate.toISOString();
+          // Add query param to potentially bypass cache on backend if needed
+          const url = `/api/org/dashboard?since=${sinceISO}${forceRefresh ? '&refresh=true' : ''}`;
+          const res = await fetch(url); 
+          const data: OrgDashboardApiResponse = await res.json();
+
+          // Store the whole response, including stale/error flags if present
+          setActivityData(data); 
+
+          // Throw an error if the response status was bad AND data wasn't successfully returned (even if stale)
+          if (!res.ok && !data?.members) { 
+               throw new Error(`API Error (${res.status}): ${data?.error?.message || 'Failed to fetch dashboard data'}`);
+          }
+
+      } catch (err: any) {
+          console.error("Fetch error:", err);
+          setFetchError(err); // Set fetch error state
+      } finally {
+          setLoading(false);
+      }
+  }, []); // Add dependencies if needed, empty for now
 
   useEffect(() => {
-    const fetchData = async () => {
-      setLoading(true);
-      setError(null);
-      setSsoUrl(null);
-      setRateLimitInfo(null); // Reset rate limit state
-      setIsStale(false); // Reset stale state
-      setStaleError(null);
-      try {
-        const sinceDate = new Date();
-        sinceDate.setDate(sinceDate.getDate() - 30); // Fetch last 30 days
-        const sinceISO = sinceDate.toISOString();
+    fetchData(); // Initial fetch
+  }, [fetchData]); 
 
-        // Use new endpoint
-        const res = await fetch(`/api/org/dashboard?since=${sinceISO}`); 
-        
-        if (res.status === 403) { 
-            const errorData: SamlErrorResponse = await res.json();
-            if (errorData.ssoRequired && errorData.ssoUrl) {
-                console.warn("SAML SSO Required:", errorData.message);
-                setError(errorData.message);
-                setSsoUrl(errorData.ssoUrl); 
-                return; 
-            }
-        }
-        // Check for Rate Limit error (status 429)
-        if (res.status === 429) {
-            const errorData: RateLimitErrorResponse = await res.json();
-            if (errorData.rateLimitExceeded) {
-                console.warn("Rate Limit Exceeded:", errorData.message);
-                setError(errorData.message); // Display message
-                setRateLimitInfo({ resetTimestamp: errorData.resetTimestamp }); // Store reset time
-                return; // Stop processing
-            }
-        }
-        if (!res.ok && res.status !== 200) { // Check if status is not OK *and* not the 200 we use for stale data
-            const errorData = await res.json().catch(() => ({}));
-            throw new Error(`Error fetching org dashboard data: ${res.statusText} (${res.status}) - ${errorData?.message || 'Unknown API error'}`);
-        }
-        // Process potentially stale or fresh data
-        const data: OrgDashboardResponse = await res.json();
-        setActivityByUser(data.activityByUser || {}); // Handle case where data might be missing
-        setOrgMembers(data.members || []);
-        setIsStale(data.isStale || false); // Set stale flag
-        if (data.isStale && data.error) {
-            setStaleError(data.error); // Store the error that caused staleness
-        }
-      } catch (err: any) {
-        console.error("Fetch error:", err);
-        // Avoid setting generic error if SSO or rate limit error is already set
-        if (!ssoUrl && !rateLimitInfo) {
-           setError(err.message || 'Failed to fetch org data');
-        }
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchData();
-  }, []); 
+  // Derive specific error states from the activityData.error or fetchError
+  const isStale = activityData?.isStale || false;
+  const apiError = activityData?.error || fetchError;
+  const ssoRequired = apiError?.ssoRequired || false;
+  const ssoUrl = apiError?.ssoUrl || null;
+  const rateLimitExceeded = apiError?.rateLimitExceeded || false;
+  const rateLimitResetTimestamp = apiError?.resetTimestamp || null;
 
   const handleAuthenticate = () => {
       if (ssoUrl) {
@@ -113,16 +90,16 @@ const OrgDashboardPage: React.FC = () => {
 
   // Function to display reset time
   const getRateLimitResetTime = () => {
-      if (!rateLimitInfo?.resetTimestamp) return 'unknown time.';
-      return new Date(rateLimitInfo.resetTimestamp).toLocaleTimeString();
+      if (!rateLimitResetTimestamp) return 'unknown time.';
+      return new Date(rateLimitResetTimestamp).toLocaleTimeString();
   };
 
   // Helper to display stale reason
   const getStaleReason = () => {
-      if (!staleError) return 'an unknown issue';
-      if (staleError.rateLimitExceeded) return `GitHub API rate limit (resets around ${new Date(staleError.resetTimestamp).toLocaleTimeString()})`;
-      if (staleError.ssoRequired) return 'GitHub SAML SSO re-authentication needed';
-      return staleError.message || 'an unknown API error';
+      if (!apiError) return 'an unknown issue';
+      if (apiError.rateLimitExceeded) return `GitHub API rate limit (resets around ${new Date(apiError.resetTimestamp).toLocaleTimeString()})`;
+      if (apiError.ssoRequired) return 'GitHub SAML SSO re-authentication needed';
+      return apiError.message || 'an unknown API error';
   }
 
   return (
@@ -131,19 +108,34 @@ const OrgDashboardPage: React.FC = () => {
         GitHub Team Activity Summary - Org: {TARGET_ORG} (Last 30 Days)
       </h2>
 
+      <div className="flex justify-center items-center mb-4 space-x-4">
+         <button 
+             onClick={() => fetchData(true)} // Call fetchData with forceRefresh=true
+             disabled={loading} 
+             className="bg-indigo-500 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold py-1 px-3 rounded text-sm"
+         >
+             {loading ? 'Refreshing...' : 'Refresh Data'}
+         </button>
+         {activityData?.timestamp && (
+            <p className="text-xs text-gray-500">
+                Data as of: {new Date(activityData.timestamp).toLocaleString()}
+            </p>
+         )}
+      </div>
+
       {loading && <p className="text-center text-gray-500 py-8">Loading organization activity...</p>}
       
       {/* Stale Data Notification */} 
       {isStale && (
           <div className="p-3 mb-4 text-sm text-blue-700 bg-blue-100 rounded-lg dark:bg-blue-200 dark:text-blue-800" role="alert">
-              <span className="font-medium">Stale Data:</span> Displaying cached data from the last successful fetch due to {getStaleReason()}. Data may be outdated.
+              <span className="font-medium">Stale Data:</span> Displaying cached data due to {getStaleReason()}. Data may be outdated.
           </div>
       )}
 
       {/* SAML Error/Button */} 
-      {ssoUrl && error && (
+      {ssoRequired && (
           <div className="text-center p-4 mb-4 bg-yellow-100 border border-yellow-300 rounded">
-              <p className="text-yellow-800 mb-3">{error}</p>
+              <p className="text-yellow-800 mb-3">{apiError.message}</p>
               <button 
                   onClick={handleAuthenticate}
                   className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline"
@@ -154,24 +146,27 @@ const OrgDashboardPage: React.FC = () => {
       )}
 
       {/* Display Rate Limit Error */} 
-      {rateLimitInfo && error && !isStale && (
+      {rateLimitExceeded && (
            <div className="text-center p-4 mb-4 bg-orange-100 border border-orange-300 rounded">
-                <p className="text-orange-800 mb-1">{error}</p>
+                <p className="text-orange-800 mb-1">{apiError.message}</p>
                 <p className="text-orange-700 text-sm">Please wait until the rate limit resets (around {getRateLimitResetTime()}) and try refreshing.</p>
             </div>
       )}
 
       {/* Other Fetch Errors */} 
-      {error && !ssoUrl && !rateLimitInfo && !isStale && (
-        <p className="text-center text-red-600 bg-red-100 p-4 rounded border border-red-300">{`Error: ${error}`}</p>
+      {apiError && !ssoRequired && !rateLimitExceeded && (
+        <p className="text-center text-red-600 bg-red-100 p-4 rounded border border-red-300">{`Error: ${apiError.message || 'Failed to load data.'}`}</p>
       )}
       
       {/* Display dashboard (even if stale) */} 
-      {(!loading && !ssoUrl && !rateLimitInfo) && (Object.keys(activityByUser).length > 0 || isStale) && (
-        <TeamActivityDashboard activityByUser={activityByUser} teamMembers={orgMembers} />
+      {activityData?.members && activityData?.activityByUser && (
+        <TeamActivityDashboard 
+            activityByUser={activityData.activityByUser} 
+            teamMembers={activityData.members} 
+        />
       )}
       {/* Handle case where loading is done, no errors, but no data (e.g., empty org) */}
-      {!loading && !error && !ssoUrl && !rateLimitInfo && Object.keys(activityByUser).length === 0 && !isStale && (
+      {!loading && !apiError && !activityData?.members && (
            <p className="text-center text-gray-500 py-8">No activity data found for the organization members in the selected period.</p>
       )}
     </div>

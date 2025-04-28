@@ -157,7 +157,7 @@ export const getPullRequests = async (owner: string, repo: string, state: 'open'
 };
 
 // Define a type for the enriched member data
-interface OrgMember {
+export interface OrgMember {
     login: string;
     name?: string | null; // GitHub user name can be null
 }
@@ -180,11 +180,11 @@ export const USER_ACTIVITY_CACHE_TTL = 15 * 60 * 1000; // 15 minutes for individ
 export const getOrgMembers = async (org: string): Promise<OrgMember[]> => {
   const cacheKey = `org-${org}-members-with-names`;
   const { data: cachedMembers, stale } = await readCache<OrgMember[]>(cacheKey, MEMBERS_CACHE_TTL);
-  if (cachedMembers) {
-    console.log(`Cache hit for members of org: ${org} ${stale ? '(stale)' : ''}`);
+  if (cachedMembers && !stale) {
+    console.log(`Cache hit (fresh) for members of org: ${org}`);
     return cachedMembers;
   }
-  console.log(`Cache miss for members of org: ${org}. Fetching from API...`);
+  console.log(`Fetching fresh members for org: ${org} (Cache was ${cachedMembers ? 'stale' : 'missing'})`);
   try {
     console.log(`Fetching members for organization: ${org}...`);
     const membersList = await octokit.paginate(octokit.orgs.listMembers, { org, per_page: 100 });
@@ -206,17 +206,10 @@ export const getOrgMembers = async (org: string): Promise<OrgMember[]> => {
     );
     
     await writeCache(cacheKey, membersWithNames); // Write to cache on success
-    return membersWithNames;
+    return membersWithNames; // Return fresh data
   } catch (error) {
-    // On error, try returning stale cache if available
-    const { data: staleMembers } = await readCache<OrgMember[]>(cacheKey, 0, { allowStale: true });
-    if (staleMembers) {
-        console.warn(`API error fetching members for ${org}, serving stale cache. Error:`, error instanceof Error ? error.message : error);
-        return staleMembers;
-    }
-    // If no stale cache, handle/rethrow original error
     handleOctokitError(error, `Error fetching members for org ${org}`);
-    throw new Error('Unhandled error in getOrgMembers after error handler.');
+    throw new Error('Failed to fetch org members after handling potential specific errors.'); 
   }
 };
 
@@ -228,7 +221,7 @@ export const getOrgMembers = async (org: string): Promise<OrgMember[]> => {
 export const getOrgRepos = async (org: string): Promise<{ name: string }[]> => {
     const cacheKey = `org-${org}-repos`;
     const { data: cachedRepos, stale } = await readCache<{ name: string }[]>(cacheKey, REPOS_CACHE_TTL);
-    if (cachedRepos) {
+    if (cachedRepos && !stale) {
        console.log(`Cache hit for repos of org: ${org} ${stale ? '(stale)' : ''}`);
        return cachedRepos;
     }
@@ -244,11 +237,6 @@ export const getOrgRepos = async (org: string): Promise<{ name: string }[]> => {
         await writeCache(cacheKey, repoNames); // Write to cache
         return repoNames;
     } catch (error) {
-        const { data: staleRepos } = await readCache<{ name: string }[]>(cacheKey, 0, { allowStale: true });
-        if (staleRepos) {
-            console.warn(`API error fetching repos for ${org}, serving stale cache. Error:`, error instanceof Error ? error.message : error);
-            return staleRepos;
-        }
         handleOctokitError(error, `Error fetching repositories for org ${org}`);
         throw new Error('Unhandled error in getOrgRepos after error handler.');
     }
@@ -258,24 +246,24 @@ export const getOrgRepos = async (org: string): Promise<{ name: string }[]> => {
  * Fetches commits for organization members across specified repositories within a date range.
  * Uses caching for the final aggregated commit list.
  */
-export const getOrgMemberCommits = async (org: string, targetRepos: string[] | null, since?: string, until?: string): Promise<any[]> => {
+export const getOrgMemberCommits = async (org: string, targetRepos: string[], since?: string, until?: string): Promise<any[]> => {
   // Generate a cache key based on parameters
   // Sort targetRepos to ensure cache key consistency if order changes but content doesn't
-  const repoKeyPart = targetRepos && targetRepos.length > 0 ? [...targetRepos].sort().join('_') : 'all';
+  const repoKeyPart = [...targetRepos].sort().join('_');
   const sinceKeyPart = since ? new Date(since).toISOString().split('T')[0] : 'start'; // Use date part
   const untilKeyPart = until ? new Date(until).toISOString().split('T')[0] : 'now'; // Use date part
   const cacheKey = `org-${org}-commits-repos_${repoKeyPart}-since_${sinceKeyPart}-until_${untilKeyPart}`;
 
   // Correctly destructure readCache result
-  const { data: cachedCommits } = await readCache<any[]>(cacheKey, COMMITS_CACHE_TTL);
-  if (cachedCommits) {
+  const { data: cachedCommits, stale, timestamp } = await readCache<any[]>(cacheKey, COMMITS_CACHE_TTL);
+  if (cachedCommits && !stale) {
     console.log(`Cache hit for aggregated org commits: ${cacheKey}`);
     return cachedCommits;
   }
 
   console.log(`Cache miss for aggregated org commits: ${cacheKey}. Fetching from API...`);
 
-  let orgMembers: { login: string }[] = [];
+  let orgMembers: OrgMember[] = [];
   try {
     orgMembers = await getOrgMembers(org);
   } catch (error) {
@@ -284,21 +272,10 @@ export const getOrgMemberCommits = async (org: string, targetRepos: string[] | n
   }
   const memberLogins = new Set(orgMembers.map(m => m.login.toLowerCase()));
 
-  let reposToScan: string[];
-  if (targetRepos && targetRepos.length > 0) {
-    reposToScan = targetRepos;
-    console.log(`Using specified target repositories: ${reposToScan.join(', ')}`);
-  } else {
-    try {
-      const allOrgRepos = await getOrgRepos(org);
-      reposToScan = allOrgRepos.map(r => r.name);
-      console.log(`No target repos specified, scanning all ${reposToScan.length} fetched organization repositories.`);
-    } catch (error) {
-      console.error(`Failed to get organization repositories for ${org}. Cannot fetch commits.`);
-      throw error;
-    }
-  }
-
+  // Directly use targetRepos, remove the 'fetch all' logic
+  const reposToScan = targetRepos;
+  console.log(`Using specified target repositories: ${reposToScan.join(', ')}`);
+  
   let allMatchingCommits: any[] = []; 
 
   console.log(`Fetching commits for ${memberLogins.size} members across ${reposToScan.length} repos...`);
@@ -378,14 +355,14 @@ export const getOrgMemberCommits = async (org: string, targetRepos: string[] | n
 /**
  * Searches for commits by a specific author within an org and optional repos.
  */
-export const searchUserCommits = async (org: string, username: string, targetRepos: string[] | null, since?: string): Promise<any[]> => {
-    const repoQualifier = targetRepos && targetRepos.length > 0 ? targetRepos.map(repo => `repo:${org}/${repo}`).join(' ') : `org:${org}`;
+export const searchUserCommits = async (org: string, username: string, targetRepos: string[], since?: string): Promise<any[]> => {
+    const repoQualifier = targetRepos.map(repo => `repo:${org}/${repo}`).join(' ');
     const dateQualifier = since ? `committer-date:>${since}` : '';
     const query = `author:${username} ${repoQualifier} ${dateQualifier}`;
     const cacheKey = `user-${username}-commits-query_${Buffer.from(query).toString('base64')}`;
     
     const { data: cachedData, stale } = await readCache<any[]>(cacheKey, USER_ACTIVITY_CACHE_TTL);
-    if (cachedData) {
+    if (cachedData && !stale) {
         console.log(`Cache hit for user commits: ${username} ${stale ? '(stale)' : ''}`);
         return cachedData;
     }
@@ -395,11 +372,6 @@ export const searchUserCommits = async (org: string, username: string, targetRep
         await writeCache(cacheKey, results);
         return results;
     } catch (error) {
-        const { data: staleData } = await readCache<any[]>(cacheKey, 0, { allowStale: true });
-        if (staleData) {
-            console.warn(`API error searching commits for ${username}, serving stale cache. Error:`, error instanceof Error ? error.message : error);
-            return staleData;
-        }
         handleOctokitError(error, `Error searching commits for user ${username}`);
         throw new Error('Unhandled error in searchUserCommits after error handler.');
     }
@@ -408,14 +380,14 @@ export const searchUserCommits = async (org: string, username: string, targetRep
 /**
  * Searches for PRs created by a specific author within an org and optional repos.
  */
-export const searchUserPRsAuthored = async (org: string, username: string, targetRepos: string[] | null, since?: string): Promise<any[]> => {
-    const repoQualifier = targetRepos && targetRepos.length > 0 ? targetRepos.map(repo => `repo:${org}/${repo}`).join(' ') : `org:${org}`;
+export const searchUserPRsAuthored = async (org: string, username: string, targetRepos: string[], since?: string): Promise<any[]> => {
+    const repoQualifier = targetRepos.map(repo => `repo:${org}/${repo}`).join(' ');
     const dateQualifier = since ? `created:>${since}` : '';
     const query = `is:pr author:${username} ${repoQualifier} ${dateQualifier}`;
     const cacheKey = `user-${username}-prs_authored-query_${Buffer.from(query).toString('base64')}`;
 
     const { data: cachedData, stale } = await readCache<any[]>(cacheKey, USER_ACTIVITY_CACHE_TTL);
-    if (cachedData) {
+    if (cachedData && !stale) {
         console.log(`Cache hit for user PRs authored: ${username} ${stale ? '(stale)' : ''}`);
         return cachedData;
     }
@@ -427,11 +399,6 @@ export const searchUserPRsAuthored = async (org: string, username: string, targe
         await writeCache(cacheKey, results);
         return results;
     } catch (error) {
-        const { data: staleData } = await readCache<any[]>(cacheKey, 0, { allowStale: true });
-        if (staleData) {
-            console.warn(`API error searching PRs authored by ${username}, serving stale cache. Error:`, error instanceof Error ? error.message : error);
-            return staleData;
-        }
         handleOctokitError(error, `Error searching PRs authored by ${username}`);
         throw new Error('Unhandled error in searchUserPRsAuthored after error handler.');
     }
@@ -440,14 +407,14 @@ export const searchUserPRsAuthored = async (org: string, username: string, targe
 /**
  * Searches for issues created by a specific author within an org and optional repos.
  */
-export const searchUserIssuesAuthored = async (org: string, username: string, targetRepos: string[] | null, since?: string): Promise<any[]> => {
-    const repoQualifier = targetRepos && targetRepos.length > 0 ? targetRepos.map(repo => `repo:${org}/${repo}`).join(' ') : `org:${org}`;
+export const searchUserIssuesAuthored = async (org: string, username: string, targetRepos: string[], since?: string): Promise<any[]> => {
+    const repoQualifier = targetRepos.map(repo => `repo:${org}/${repo}`).join(' ');
     const dateQualifier = since ? `created:>${since}` : '';
     const query = `is:issue author:${username} ${repoQualifier} ${dateQualifier}`;
     const cacheKey = `user-${username}-issues_authored-query_${Buffer.from(query).toString('base64')}`;
 
     const { data: cachedData, stale } = await readCache<any[]>(cacheKey, USER_ACTIVITY_CACHE_TTL);
-    if (cachedData) {
+    if (cachedData && !stale) {
         console.log(`Cache hit for user issues authored: ${username} ${stale ? '(stale)' : ''}`);
         return cachedData;
     }
@@ -459,11 +426,6 @@ export const searchUserIssuesAuthored = async (org: string, username: string, ta
         await writeCache(cacheKey, results);
         return results;
     } catch (error) {
-        const { data: staleData } = await readCache<any[]>(cacheKey, 0, { allowStale: true });
-        if (staleData) {
-            console.warn(`API error searching issues authored by ${username}, serving stale cache. Error:`, error instanceof Error ? error.message : error);
-            return staleData;
-        }
         handleOctokitError(error, `Error searching issues authored by ${username}`);
         throw new Error('Unhandled error in searchUserIssuesAuthored after error handler.');
     }
@@ -472,14 +434,14 @@ export const searchUserIssuesAuthored = async (org: string, username: string, ta
 /**
  * Searches for PR comments made by a specific user within an org and optional repos.
  */
-export const searchUserPRComments = async (org: string, username: string, targetRepos: string[] | null, since?: string): Promise<any[]> => {
-    const repoQualifier = targetRepos && targetRepos.length > 0 ? targetRepos.map(repo => `repo:${org}/${repo}`).join(' ') : `org:${org}`;
+export const searchUserPRComments = async (org: string, username: string, targetRepos: string[], since?: string): Promise<any[]> => {
+    const repoQualifier = targetRepos.map(repo => `repo:${org}/${repo}`).join(' ');
     const dateQualifier = since ? `created:>${since}` : '';
     const query = `is:pr commenter:${username} ${repoQualifier} ${dateQualifier}`;
     const cacheKey = `user-${username}-pr_comments-query_${Buffer.from(query).toString('base64')}`;
 
     const { data: cachedData, stale } = await readCache<any[]>(cacheKey, USER_ACTIVITY_CACHE_TTL);
-    if (cachedData) {
+    if (cachedData && !stale) {
         console.log(`Cache hit for user PR comments: ${username} ${stale ? '(stale)' : ''}`);
         return cachedData;
     }
@@ -491,11 +453,6 @@ export const searchUserPRComments = async (org: string, username: string, target
         await writeCache(cacheKey, results);
         return results;
     } catch (error) {
-        const { data: staleData } = await readCache<any[]>(cacheKey, 0, { allowStale: true });
-        if (staleData) {
-            console.warn(`API error searching PR comments by ${username}, serving stale cache. Error:`, error instanceof Error ? error.message : error);
-            return staleData;
-        }
         handleOctokitError(error, `Error searching PR comments by ${username}`);
         throw new Error('Unhandled error in searchUserPRComments after error handler.');
     }
@@ -504,90 +461,61 @@ export const searchUserPRComments = async (org: string, username: string, target
 // Define type for aggregated org activity data
 export interface OrgActivityData {
     activityByUser: { 
-        [login: string]: { 
-            commitCount: number; 
-            prAuthoredCount: number; 
-            issueAuthoredCount: number; 
-            prCommentCount: number; 
-        } 
+        [login: string]: UserActivitySummary; 
     };
     members: OrgMember[];
 }
 
-// Define return type for the function, including potential stale info
-export interface OrgActivityResult extends OrgActivityData {
-    isStale: boolean;
-    error?: any; // Store original error info if stale
+// Define UserActivitySummary for export
+export interface UserActivitySummary {
+    commitCount: number; 
+    prAuthoredCount: number; 
+    issueAuthoredCount: number; 
+    prCommentCount: number; 
 }
 
 /**
  * Fetches comprehensive activity data for all org members.
  */
-export const getOrgActivityData = async (org: string, targetRepos: string[] | null, since?: string, until?: string): Promise<OrgActivityResult> => {
-    const repoKeyPart = targetRepos && targetRepos.length > 0 ? [...targetRepos].sort().join('_') : 'all';
-    const sinceKeyPart = since ? new Date(since).toISOString().split('T')[0] : 'start';
-    const untilKeyPart = until ? new Date(until).toISOString().split('T')[0] : 'now';
-    const cacheKey = `org-${org}-activity-repos_${repoKeyPart}-since_${sinceKeyPart}-until_${untilKeyPart}`;
-
+export const getOrgActivityData = async (org: string, targetRepos: string[], since?: string, until?: string): Promise<OrgActivityData> => {
+    const cacheKey = `org-${org}-activity-repos_${[...targetRepos].sort().join('_')}-since_${since ? new Date(since).toISOString().split('T')[0] : 'start'}-until_${until ? new Date(until).toISOString().split('T')[0] : 'now'}`;
     const { data: cachedData, stale } = await readCache<OrgActivityData>(cacheKey, ORG_ACTIVITY_CACHE_TTL);
-    if (cachedData) {
-        console.log(`Cache hit for org activity: ${cacheKey} ${stale ? '(stale)' : ''}`);
-        return { ...cachedData, isStale: stale }; 
+    if (cachedData && !stale) {
+        console.log(`Cache hit for org activity: ${cacheKey}`);
+        return cachedData;
     }
     console.log(`Cache miss for org activity: ${cacheKey}. Fetching from API...`);
+    
+    // Fetch all parts. Errors will propagate and be caught by the API handler.
+    const members = await getOrgMembers(org);
+    const memberLogins = members.map(m => m.login);
 
-    try {
-        let members: OrgMember[] = [];
-        try { members = await getOrgMembers(org); } catch (error) { throw error; } // Relies on getOrgMembers cache
-        const memberLogins = members.map(m => m.login);
+    const activityPromises = memberLogins.map(login => 
+        Promise.all([
+            searchUserCommits(org, login, targetRepos, since), 
+            searchUserPRsAuthored(org, login, targetRepos, since),
+            searchUserIssuesAuthored(org, login, targetRepos, since),
+            searchUserPRComments(org, login, targetRepos, since),
+        ])
+    );
+    const memberActivities = await Promise.all(activityPromises);
 
-        // Fetch details for each member - CONSIDER OPTIMIZING: This is very API heavy!
-        const activityPromises = memberLogins.map(login => 
-            Promise.all([
-                searchUserCommits(org, login, targetRepos, since), // Use since only, as until isn't well supported in search
-                searchUserPRsAuthored(org, login, targetRepos, since),
-                searchUserIssuesAuthored(org, login, targetRepos, since),
-                searchUserPRComments(org, login, targetRepos, since),
-            ]).then(([commits, prs, issues, comments]) => ({ 
-                login, 
-                commits, 
-                prs, 
-                issues, 
-                comments 
-            }))
-        );
-        
-        const memberActivities = await Promise.all(activityPromises);
+    const activityByUser = memberActivities.reduce((acc, activityResult, index) => {
+        // Get the corresponding member login for this set of results
+        const loginLower = members[index].login.toLowerCase(); 
+        acc[loginLower] = {
+            commitCount: activityResult[0].length, // Commits
+            prAuthoredCount: activityResult[1].length, // PRs Authored
+            issueAuthoredCount: activityResult[2].length, // Issues Authored
+            prCommentCount: activityResult[3].length, // PR Comments
+        };
+        return acc;
+    }, {} as { [key: string]: UserActivitySummary });
 
-        // Structure data for the dashboard
-        const activityByUser = memberActivities.reduce((acc, activity) => {
-            const loginLower = activity.login.toLowerCase();
-            acc[loginLower] = {
-                commitCount: activity.commits.length,
-                prAuthoredCount: activity.prs.length,
-                issueAuthoredCount: activity.issues.length,
-                prCommentCount: activity.comments.length,
-            };
-            return acc;
-        }, {} as { [key: string]: { commitCount: number; prAuthoredCount: number; issueAuthoredCount: number; prCommentCount: number; } });
-
-        const result: OrgActivityData = { activityByUser, members };
-        await writeCache(cacheKey, result);
-        return { ...result, isStale: false }; 
-    } catch (error) {
-        const { data: staleData } = await readCache<OrgActivityData>(cacheKey, 0, { allowStale: true });
-        if (staleData) {
-            console.warn(`API error fetching org activity, serving stale cache. Error:`, error instanceof Error ? error.message : error);
-            const errorPayload = 
-                error instanceof SamlSsoError ? { ssoRequired: true, ssoUrl: error.ssoUrl, message: error.message } :
-                error instanceof RateLimitError ? { rateLimitExceeded: true, resetTimestamp: error.resetTimestamp, message: error.message } :
-                { message: error instanceof Error ? error.message : 'Unknown error' };
-            // Return stale data marked as stale, including the error context
-            return { ...staleData, isStale: true, error: errorPayload };
-        }
-        handleOctokitError(error, `Error fetching org activity data`);
-        throw new Error('Unhandled error in getOrgActivityData after error handler.');
-    }
+    const result: OrgActivityData = { activityByUser, members };
+    await writeCache(cacheKey, result);
+    console.log(`Finished fetching and caching org activity data for ${org}.`);
+    return result;
 };
 
 export default octokit; // Export the initialized client if needed elsewhere 

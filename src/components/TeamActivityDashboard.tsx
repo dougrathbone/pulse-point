@@ -22,10 +22,16 @@ const TeamActivityDashboard: React.FC<TeamActivityDashboardProps> = ({ activityB
   // Combine member info with activity counts
   const memberStats = teamMembers.map(member => {
     const login = member.login.toLowerCase();
-    const activity = activityByUser[login] || { commitCount: 0, prAuthoredCount: 0, issueAuthoredCount: 0, prCommentCount: 0 }; // Default if no activity
+    // Ensure activityByUser[login] exists or provide defaults
+    const activity = activityByUser[login] || { 
+        commitCount: 0, 
+        prAuthoredCount: 0, 
+        issueAuthoredCount: 0, 
+        prCommentCount: 0 
+    };
     return {
       ...member,
-      ...activity, // Add counts to member object
+      ...activity,
       displayName: member.name || member.login // Use login if name is null/empty
     };
   });
@@ -42,29 +48,29 @@ const TeamActivityDashboard: React.FC<TeamActivityDashboardProps> = ({ activityB
       <table className="min-w-full table-auto text-left">
         <thead className="border-b bg-gray-100">
           <tr>
-            <th className="px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
-            <th className="px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Username</th>
-            <th className="px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-right">Commits</th>
-            <th className="px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-right">PRs Authored</th>
-            <th className="px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-right">Issues Authored</th>
-            <th className="px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-right">PR Comments</th>
+            <th className="px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+            {/* Username column can be optional if name includes login */}
+            {/* <th className="px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Username</th> */}
+            <th className="px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-right">Commits</th>
+            <th className="px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-right">PRs Authored</th>
+            {/* Issues Authored column - keep or remove as needed */}
+            {/* <th className="px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-right">Issues Authored</th> */}
+            <th className="px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-right">PR Comments</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-200">
           {memberStats.map((member) => (
             <tr key={member.login} className="hover:bg-gray-50">
-              <td className="px-6 py-4 whitespace-nowrap">
+              <td className="px-4 py-3 whitespace-nowrap">
                 <Link to={`/user/${member.login}`} className="text-blue-600 hover:underline font-medium">
                   {member.displayName}
                 </Link>
               </td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                {member.login}
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{member.commitCount}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{member.prAuthoredCount}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{member.issueAuthoredCount}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{member.prCommentCount}</td>
+              {/* <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">{member.login}</td> */}
+              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 text-right">{member.commitCount}</td>
+              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 text-right">{member.prAuthoredCount}</td>
+              {/* <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 text-right">{member.issueAuthoredCount}</td> */}
+              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 text-right">{member.prCommentCount}</td>
             </tr>
           ))}
         </tbody>
