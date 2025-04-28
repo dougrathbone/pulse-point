@@ -1,14 +1,26 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 
-// Placeholder types - refine later based on actual API data shape
+// Placeholder types
 type CommitItem = { sha: string; commit: { message: string }; html_url: string };
-type IssueItem = { id: number; number: number; title: string; html_url: string; pull_request?: object };
+type IssueItem = { id: number; number: number; title: string; html_url: string };
+type PullRequestItem = { id: number; number: number; title: string; html_url: string };
 
+// Structure for the summary data from the API
+interface UserSummaryStats {
+    commitCount: number;
+    prCount: number;
+    issueCount: number;
+    totalOrgCommitCount: number;
+}
+
+// Updated response structure
 interface UserDetailsResponse {
     username: string;
+    summary: UserSummaryStats;
     commits: CommitItem[];
-    issuesAndPRs: IssueItem[];
+    pullRequests: PullRequestItem[]; // Expect separate PRs now
+    issues: IssueItem[]; // Expect separate Issues now
     aiSummary: string;
 }
 
@@ -68,9 +80,9 @@ const UserDetailPage: React.FC = () => {
         }
     };
     
-    // Separate PRs from Issues
-    const pullRequests = userDetails?.issuesAndPRs?.filter(item => item.pull_request) || [];
-    const issues = userDetails?.issuesAndPRs?.filter(item => !item.pull_request) || [];
+    // No need to filter PRs/Issues here anymore, backend does it
+    // const pullRequests = userDetails?.issuesAndPRs?.filter(item => item.pull_request) || [];
+    // const issues = userDetails?.issuesAndPRs?.filter(item => !item.pull_request) || [];
 
     return (
         <div className="p-4">
@@ -95,7 +107,24 @@ const UserDetailPage: React.FC = () => {
 
             {userDetails && !loading && !error && (
                  <div className="space-y-6">
-                    {/* AI Summary */} 
+                    {/* ---- Quick Summary ---- */} 
+                    <div className="bg-white p-6 rounded shadow-md grid grid-cols-1 md:grid-cols-3 gap-4 text-center">
+                        <div>
+                            <span className="text-2xl font-bold text-blue-600">{userDetails.summary.commitCount}</span>
+                            <p className="text-sm text-gray-500">Commits</p>
+                            <p className="text-xs text-gray-400">(Org Total: {userDetails.summary.totalOrgCommitCount})</p>
+                        </div>
+                        <div>
+                            <span className="text-2xl font-bold text-green-600">{userDetails.summary.prCount}</span>
+                            <p className="text-sm text-gray-500">Pull Requests Opened</p>
+                        </div>
+                        <div>
+                            <span className="text-2xl font-bold text-orange-600">{userDetails.summary.issueCount}</span>
+                            <p className="text-sm text-gray-500">Issues Opened</p>
+                        </div>
+                    </div>
+                    
+                    {/* ---- AI Summary ---- */} 
                     <div className="bg-white p-6 rounded shadow-md">
                         <h3 className="text-lg font-semibold mb-2">AI Performance Summary (Last 30 Days)</h3>
                         <p className="text-gray-700 whitespace-pre-wrap">
@@ -104,6 +133,7 @@ const UserDetailPage: React.FC = () => {
                         <p className="text-xs text-gray-400 mt-2 italic">(Claude API key required in .env for real summary)</p>
                     </div>
                     
+                    {/* ---- Detailed Lists ---- */} 
                     {/* Commits */} 
                     <div className="bg-white p-4 rounded shadow-md">
                         <h3 className="text-lg font-semibold mb-3">Commits ({userDetails.commits.length})</h3>
@@ -121,10 +151,10 @@ const UserDetailPage: React.FC = () => {
                     
                     {/* Pull Requests */} 
                     <div className="bg-white p-4 rounded shadow-md">
-                        <h3 className="text-lg font-semibold mb-3">Pull Requests Opened ({pullRequests.length})</h3>
-                         {pullRequests.length > 0 ? (
+                        <h3 className="text-lg font-semibold mb-3">Pull Requests Opened ({userDetails.summary.prCount})</h3>
+                         {userDetails.pullRequests.length > 0 ? (
                             <ul className="space-y-2 max-h-60 overflow-y-auto">
-                                {pullRequests.map((pr) => (
+                                {userDetails.pullRequests.map((pr) => (
                                     <li key={pr.id} className="text-sm border-l-4 border-green-500 pl-2">
                                         <a href={pr.html_url} target="_blank" rel="noopener noreferrer" className="hover:underline text-blue-600">#{pr.number} {pr.title}</a>
                                     </li>
@@ -135,10 +165,10 @@ const UserDetailPage: React.FC = () => {
 
                     {/* Issues */} 
                     <div className="bg-white p-4 rounded shadow-md">
-                        <h3 className="text-lg font-semibold mb-3">Issues Opened ({issues.length})</h3>
-                         {issues.length > 0 ? (
+                        <h3 className="text-lg font-semibold mb-3">Issues Opened ({userDetails.summary.issueCount})</h3>
+                         {userDetails.issues.length > 0 ? (
                             <ul className="space-y-2 max-h-60 overflow-y-auto">
-                                {issues.map((issue) => (
+                                {userDetails.issues.map((issue) => (
                                     <li key={issue.id} className="text-sm border-l-4 border-orange-500 pl-2">
                                         <a href={issue.html_url} target="_blank" rel="noopener noreferrer" className="hover:underline text-blue-600">#{issue.number} {issue.title}</a>
                                     </li>

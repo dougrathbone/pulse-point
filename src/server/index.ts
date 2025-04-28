@@ -88,7 +88,11 @@ const handleGetOrgCommits = async (req: Request, res: Response, next: NextFuncti
 // Define the async handler function for user details
 const handleGetUserDetails = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const { username } = req.params;
-    const { since, until } = req.query;
+    // Use consistent date range (match dashboard)
+    const sinceDate = new Date();
+    sinceDate.setDate(sinceDate.getDate() - 30); 
+    const sinceISO = (req.query.since as string) || sinceDate.toISOString();
+    const untilISO = req.query.until as string | undefined;
 
     if (!TARGET_ORG) {
         const err = new Error('TARGET_ORG not configured in settings.ts');
@@ -104,19 +108,35 @@ const handleGetUserDetails = async (req: Request, res: Response, next: NextFunct
     try {
         console.log(`Fetching details for user: ${username}, Org: ${TARGET_ORG}`);
         
-        // Fetch data concurrently
-        const [commits, issuesAndPRs] = await Promise.all([
-            githubService.searchUserCommits(TARGET_ORG, username, TARGET_REPOS, since as string | undefined, until as string | undefined),
-            githubService.searchUserIssuesAndPRs(TARGET_ORG, username, TARGET_REPOS, since as string | undefined, until as string | undefined)
+        // Fetch user-specific data and overall org data concurrently
+        const [userCommits, userIssuesAndPRs, allOrgCommitsData] = await Promise.all([
+            githubService.searchUserCommits(TARGET_ORG, username, TARGET_REPOS, sinceISO, untilISO),
+            githubService.searchUserIssuesAndPRs(TARGET_ORG, username, TARGET_REPOS, sinceISO, untilISO),
+            // Fetch all org commits for comparison (should be cached)
+            githubService.getOrgMemberCommits(TARGET_ORG, TARGET_REPOS, sinceISO, untilISO)
         ]);
+        
+        // Calculate total org commits for the period
+        const totalOrgCommits = allOrgCommitsData.length;
+        
+        // Separate user PRs and Issues
+        const userPRs = userIssuesAndPRs.filter(item => item.pull_request);
+        const userIssues = userIssuesAndPRs.filter(item => !item.pull_request);
 
         // TODO: Add call to Claude API summarization service here
         const aiSummary = `AI summary for ${username} is pending implementation.`;
 
         res.json({ 
             username,
-            commits, 
-            issuesAndPRs, 
+            summary: {
+                commitCount: userCommits.length,
+                prCount: userPRs.length,
+                issueCount: userIssues.length,
+                totalOrgCommitCount: totalOrgCommits // Add total for context
+            },
+            commits: userCommits, 
+            pullRequests: userPRs,
+            issues: userIssues,
             aiSummary 
         });
 

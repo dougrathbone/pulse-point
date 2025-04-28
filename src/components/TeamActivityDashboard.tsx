@@ -22,7 +22,7 @@ const TeamActivityDashboard: React.FC<TeamActivityDashboardProps> = ({ commitsBy
     return {
       ...member,
       commitCount,
-      displayName: member.name ? `${member.name} (${member.login})` : member.login
+      displayName: member.name || '' // Use name or empty string
     };
   });
 
@@ -34,30 +34,37 @@ const TeamActivityDashboard: React.FC<TeamActivityDashboardProps> = ({ commitsBy
   }
 
   return (
-    <div className="space-y-4">
-      {memberStats.map((member) => {
-        const commits = commitsByAuthor[member.login.toLowerCase()] || [];
-        return (
-          <div key={member.login} className="bg-white shadow-md rounded-lg p-4 transition duration-150 ease-in-out hover:shadow-lg">
-            <Link 
-                to={`/user/${member.login}`}
-                className="block hover:bg-gray-50 -m-4 p-4 rounded-lg" // Make the whole block linkable (optional style)
-            >
-                <h3 className="text-lg font-semibold text-gray-800">
-                  {member.displayName} - Commits: {member.commitCount}
-                  {/* Placeholder for PRs/Comments later */}
-                  {/* - PRs: ? - Comments: ? */} 
-                </h3>
-            </Link>
-
-            {/* Optionally keep showing top few commits here, or remove for cleaner summary */} 
-            {/* {commits.length > 0 ? ( ... ) : ( ... )} */} 
-            <p className="text-sm text-gray-500 mt-1">
-                Click for detailed view.
-            </p>
-          </div>
-        );
-      })}
+    <div className="overflow-x-auto bg-white shadow-md rounded-lg">
+      <table className="min-w-full table-auto text-left">
+        <thead className="border-b bg-gray-100">
+          <tr>
+            <th className="px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+            <th className="px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Username</th>
+            <th className="px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-right">Commits (30d)</th>
+            {/* Add headers for PRs/Issues later */}
+            {/* <th className="px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-right">PRs</th> */}
+            {/* <th className="px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-right">Issues</th> */}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-200">
+          {memberStats.map((member) => (
+            <tr key={member.login} className="hover:bg-gray-50">
+              <td className="px-6 py-4 whitespace-nowrap">
+                <Link to={`/user/${member.login}`} className="text-blue-600 hover:underline font-medium">
+                  {member.displayName || member.login} { /* Show login if no display name */ }
+                </Link>
+              </td>
+              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                {member.login}
+              </td>
+              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
+                {member.commitCount}
+              </td>
+              {/* Add cells for PRs/Issues later */}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 };
