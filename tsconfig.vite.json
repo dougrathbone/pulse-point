@@ -1,0 +1,31 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Vite/Frontend specific overrides
+    "target": "ESNext", // Use modern target for browsers
+    "module": "ESNext", // Use ES modules for frontend
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "noEmit": true, // Vite handles emitting files
+    "jsx": "react-jsx",
+    // Keep existing paths and baseUrl
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    }
+    // Remove backend specific options if necessary (outDir, rootDir)
+    // "outDir": null, 
+    // "rootDir": null
+  },
+  "include": [
+    "src", // Include frontend source files
+    "vite.config.ts" // Include Vite config file
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "tests",
+    "src/server" // Exclude backend server code from frontend build
+  ]
+} 
